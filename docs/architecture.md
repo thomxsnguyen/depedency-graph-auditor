@@ -140,14 +140,27 @@ sequenceDiagram
 
 The auditor traverses a project's full transitive dependency graph. It is **self-feeding**: resolving one package discovers its dependencies, each of which becomes a new job.
 
-### Single Job Definition
+### How It Starts
+
+The auditor reads the root project's dependency file (e.g., `package.json`, `go.mod`) and enqueues one job per direct dependency. Version ranges are resolved to exact versions at this stage.
+
+### Single Job — 5 Steps
 
 > **Resolve and audit package _P_ at version _V_.**
 
-A worker:
-1. Fetches _P_'s metadata from the package registry.
-2. Evaluates against policy (outdated version, disallowed license, known vulnerability).
-3. Enqueues a new job for each of _P_'s direct dependencies not already seen.
+A worker runs these steps in order:
+
+1. **Fetch metadata** — HTTP GET to the package registry. This is the I/O-bound step.
+2. **Audit against policy** — check license, version freshness, and known vulnerabilities. Produce a verdict: `Pass`, `PolicyViolation`, or `Unresolvable`.
+3. **Save the node** — write a `Package` row to Postgres (`ON CONFLICT DO NOTHING` for idempotency).
+4. **Save the edges** — write a `DependencyEdge` row for each direct dependency discovered.
+5. **Enqueue new jobs** — for each dependency not already in the `packages` table, create a new job. This is the self-feeding step.
+
+### Deduplication
+
+The `packages` table doubles as the "seen" set. Before enqueuing a dependency, the worker checks if `(name, version)` already exists. If it does, the package has been audited or is in progress — skip it. This is what stops diamonds from duplicating work and cycles from running forever.
+
+At the database level, `ON CONFLICT DO NOTHING` handles race conditions — if two workers try to insert the same package simultaneously, one succeeds and the other is a no-op.
 
 ### Why This Workload
 
@@ -167,7 +180,13 @@ The deliverable is an **annotated directed graph** plus a **report**:
 
 - **Nodes:** audited packages, each annotated with a verdict (pass / policy violation / unresolvable).
 - **Edges:** "depends on" relationships discovered during resolution.
-- **Report:** packages violating policy, the dependency paths that pulled them in, and packages that could not be resolved.
+- **Report contents:**
+
+| Section | Source |
+|---|---|
+| Policy violations | `packages` where verdict = `PolicyViolation` |
+| Dependency paths | Walk `edges` backwards from each violation to the root |
+| Unresolvable packages | `jobs` where status = `DeadLettered` |
 
 ```mermaid
 graph LR
