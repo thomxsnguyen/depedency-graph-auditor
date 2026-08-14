@@ -22,6 +22,8 @@ Phase 1 delivers the first runnable slice of the system: a producer can submit j
 | **Deduplication** | Check-before-enqueue against the in-memory packages map |
 | **Completion detection** | Know when the graph is fully traversed and the audit is done |
 | **Report generation** | Print policy violations, dependency paths, and summary stats |
+| **Semver resolution** | Parse version ranges and resolve to exact versions |
+| **Dependency file parsing** | Read `package.json` and extract the dependency map |
 
 ### Out of scope (later phases)
 
@@ -48,12 +50,16 @@ mini-distributed-job-api/
 │   │   └── pool.go              ← Pool struct, Start(), worker loop, completion tracking
 │   ├── job/
 │   │   └── job.go               ← Job struct, Status enum, Handler interface
-│   └── auditor/
-│       ├── handler.go           ← AuditHandler: the 5-step job handler
-│       ├── registry.go          ← HTTP client for the npm registry
-│       ├── policy.go            ← License / version / vulnerability checks
-│       ├── store.go             ← In-memory PackageStore + EdgeStore (thread-safe)
-│       └── report.go            ← Report generation from completed graph
+│   ├── auditor/
+│   │   ├── handler.go           ← AuditHandler: the 5-step job handler
+│   │   ├── registry.go          ← HTTP client for the npm registry
+│   │   ├── policy.go            ← License / version / vulnerability checks
+│   │   ├── store.go             ← In-memory PackageStore + EdgeStore (thread-safe)
+│   │   └── report.go            ← Report generation from completed graph
+│   ├── semver/
+│   │   └── semver.go            ← Version range parsing + resolution
+│   └── depfile/
+│       └── depfile.go           ← package.json parser
 ├── docs/
 │   └── ...
 ├── go.mod
@@ -363,6 +369,104 @@ The path is computed by walking the `EdgeStore` backwards from the violation to 
 
 ---
 
+### 9. Semver (`internal/semver/`)
+
+The npm registry returns version ranges for dependencies (e.g., `^4.18.0`, `~1.2.3`, `>=1.0.0 <2.0.0`). The auditor needs to resolve each range to a single exact version.
+
+```go
+package semver
+
+// ParseRange parses a version range string (e.g., "^4.18.0") into a constraint.
+func ParseRange(rangeStr string) (Constraint, error)
+
+// Resolve selects the highest version from `available` that satisfies the constraint.
+// Returns an error if no version matches.
+func Resolve(constraint Constraint, available []string) (string, error)
+
+// Constraint represents a parsed semver range.
+type Constraint struct {
+    // internal representation
+}
+```
+
+**Supported range operators (Phase 1):**
+
+| Operator | Example | Meaning |
+|---|---|---|
+| `^` (caret) | `^4.18.0` | `>=4.18.0` and `<5.0.0` — compatible with major version |
+| `~` (tilde) | `~1.2.3` | `>=1.2.3` and `<1.3.0` — compatible with minor version |
+| Exact | `4.18.2` | Exactly `4.18.2` |
+| `>=`, `<`, etc. | `>=1.0.0 <2.0.0` | Explicit range |
+
+**Implementation approach:** Use an existing Go semver library (e.g., `github.com/Masterminds/semver`) rather than hand-rolling a parser. Semver edge cases (pre-release tags, build metadata, `0.x` caret behavior) are surprisingly deep — a battle-tested library avoids subtle bugs that would distract from the queue work.
+
+```go
+// Example usage in the registry client:
+func (c *npmClient) resolveVersion(name string, rangeStr string) (string, error) {
+    // 1. Fetch all available versions from registry
+    meta, err := c.fetchAllVersions(name)
+
+    // 2. Parse the range constraint
+    constraint, err := semver.ParseRange(rangeStr)
+
+    // 3. Find the highest matching version
+    resolved, err := semver.Resolve(constraint, meta.Versions)
+
+    return resolved, nil
+}
+```
+
+**Why this matters for correctness:** If version resolution is wrong, the auditor fetches the wrong version's metadata, discovers the wrong dependencies, and the entire graph is silently incorrect. The traversal still terminates (dedup still works), but the audit results are meaningless.
+
+---
+
+### 10. Dependency File Parser (`internal/depfile/`)
+
+Reads a `package.json` and extracts the dependency map. This is the seed step — the entry point's first action before anything touches the queue.
+
+```go
+package depfile
+
+// Dependency represents a single entry from a dependency file.
+type Dependency struct {
+    Name         string
+    VersionRange string  // raw range from the file, e.g., "^4.18.0"
+}
+
+// ParsePackageJSON reads a package.json file and returns its dependencies.
+// Reads from both "dependencies" and "devDependencies" (configurable).
+func ParsePackageJSON(path string) ([]Dependency, error)
+```
+
+**What it handles:**
+
+```json
+{
+  "name": "my-app",
+  "dependencies": {
+    "express": "^4.18.0",
+    "lodash": "~4.17.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
+```
+
+```go
+result := []depfile.Dependency{
+    {Name: "express", VersionRange: "^4.18.0"},
+    {Name: "lodash",  VersionRange: "~4.17.0"},
+    // devDependencies included if configured
+}
+```
+
+**Design decision — `devDependencies`:** Include them by default. A license violation in a dev dependency still matters legally (the dependency is still downloaded and used). A flag can exclude them for faster audits.
+
+**ID generation** is not its own package — `NewJobID()` lives directly in `internal/job/job.go` since it's a single function that only the job package uses.
+
+---
+
 ## Entry Point (`cmd/auditor/main.go`)
 
 ```
@@ -454,6 +558,8 @@ In Phase 4, `ON CONFLICT DO NOTHING` in Postgres closes this gap at the storage 
 | `PolicyChecker` | Each policy rule produces the correct verdict for known inputs. |
 | `PackageStore` | Concurrent Add/Exists from multiple goroutines — no races (run with `-race`). |
 | `Report` | Path computation: given a known graph, dependency paths are correct. |
+| `semver` | Caret, tilde, exact, and range constraints resolve to the correct version. No-match returns an error. |
+| `depfile` | Parses a valid `package.json`. Handles missing `dependencies` key. Handles `devDependencies` inclusion/exclusion. |
 
 ### Integration test
 
