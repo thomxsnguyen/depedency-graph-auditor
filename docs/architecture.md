@@ -206,13 +206,13 @@ Each layer is built and tested before the next, ensuring a working system at eve
 
 | Phase | Layer | What's Proven |
 |---|---|---|
-| 1 | Bounded worker pool + happy path | Producers → queue → workers → job execution |
-| 2 | Retries with exponential backoff + jitter | Transient failures are absorbed, not lost |
-| 3 | Dead-letter queue | Permanently failing jobs are quarantined |
-| 4 | Durable storage (Postgres / disk) | Jobs survive crashes; long audits are resumable |
+| 1 | Bounded worker pool + auditor happy path | Workers resolve, audit, and expand a dependency graph end-to-end |
+| 2 | Retries with exponential backoff + jitter | Registry timeouts and rate-limit rejections are absorbed, not lost |
+| 3 | Dead-letter queue | Unresolvable packages are quarantined; the audit completes with a clear record |
+| 4 | Durable storage (Postgres / disk) | Jobs survive crashes; long audits are resumable from their frontier |
 | 5 | Graceful shutdown with drain + timeout | Restarts are safe; no in-flight work is dropped |
 
-The auditor workload can be introduced from Phase 1 onward — even a basic pool running resolve-and-expand jobs demonstrates self-feeding expansion and backpressure.
+The auditor is the workload from Phase 1 onward — each subsequent phase hardens the queue under the same realistic, self-feeding graph traversal.
 
 ---
 
