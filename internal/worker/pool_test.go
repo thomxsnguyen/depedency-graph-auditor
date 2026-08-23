@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,4 +203,70 @@ type handlerFunc func(context.Context, job.Job) ([]job.Job, error)
 
 func (f handlerFunc) Handle(ctx context.Context, j job.Job) ([]job.Job, error) {
 	return f(ctx, j)
+}
+
+// noBackoff is injected via WithBackoff in retry tests so the suite never sleeps.
+func noBackoff(int) time.Duration { return 0 }
+
+// TestPoolRetryThenSucceed verifies that a handler which returns a transient error
+// on the first two attempts and succeeds on the third causes the job to complete,
+// Done to fire, and the handler to have been called exactly failCount+1 times.
+func TestPoolRetryThenSucceed(t *testing.T) {
+	const failCount = 2
+	const maxAttempts = 5
+
+	q := queue.New(8)
+	var calls atomic.Int64
+	h := handlerFunc(func(_ context.Context, _ job.Job) ([]job.Job, error) {
+		if calls.Add(1) <= failCount {
+			return nil, errors.New("transient error")
+		}
+		return nil, nil
+	})
+
+	p := worker.NewWithOptions(2, q, h, worker.WithBackoff(noBackoff))
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = maxAttempts
+	p.Submit(j)
+
+	waitDone(t, p, 3*time.Second)
+
+	if got := calls.Load(); got != failCount+1 {
+		t.Errorf("retry-then-succeed: handler calls got %d, want %d", got, failCount+1)
+	}
+
+	q.Close()
+	p.Wait()
+}
+
+// TestPoolExhausted verifies that a handler which always fails causes the job to
+// be logged as exhausted after MaxAttempts attempts, Done to fire cleanly, and
+// the handler to have been called exactly MaxAttempts times.
+func TestPoolExhausted(t *testing.T) {
+	const maxAttempts = 3
+
+	q := queue.New(8)
+	var calls atomic.Int64
+	h := handlerFunc(func(_ context.Context, _ job.Job) ([]job.Job, error) {
+		calls.Add(1)
+		return nil, errors.New("permanent error")
+	})
+
+	p := worker.NewWithOptions(2, q, h, worker.WithBackoff(noBackoff))
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = maxAttempts
+	p.Submit(j)
+
+	waitDone(t, p, 3*time.Second)
+
+	if got := calls.Load(); got != maxAttempts {
+		t.Errorf("exhausted: handler calls got %d, want %d", got, maxAttempts)
+	}
+
+	q.Close()
+	p.Wait()
 }
