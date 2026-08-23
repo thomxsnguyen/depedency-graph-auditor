@@ -11,9 +11,10 @@ import (
 type Status string
 
 const (
-	StatusPending   Status = "pending"
-	StatusRunning   Status = "running"
-	StatusCompleted Status = "completed"
+	StatusPending      Status = "pending"
+	StatusRunning      Status = "running"
+	StatusCompleted    Status = "completed"
+	StatusDeadLettered Status = "dead_lettered"
 )
 
 // DefaultMaxAttempts is the number of times a job will be tried before it is
