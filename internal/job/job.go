@@ -3,6 +3,7 @@ package job
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -28,8 +29,9 @@ type Job struct {
 	Type        string
 	Payload     json.RawMessage
 	Status      Status
-	Attempts    int // how many times this job has been tried (0 = never run)
-	MaxAttempts int // maximum tries before the job is abandoned
+	Attempts    int       // how many times this job has been tried (0 = never run)
+	MaxAttempts int       // maximum tries before the job is abandoned
+	ScheduledAt time.Time // zero = run immediately; set by retry path for durable backoff
 }
 
 // NewJob constructs a Job with a fresh ID, pending status, and the default

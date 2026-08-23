@@ -62,7 +62,7 @@ func (h *selfFeedingHandler) Handle(_ context.Context, j job.Job) ([]job.Job, er
 
 func makeJob(id string) job.Job {
 	j := job.NewJob("0", nil)
-	j.ID = id
+	j.ID = id // override the generated ID with the caller-supplied one
 	return j
 }
 
@@ -89,11 +89,16 @@ func TestPoolProcessesAllJobs(t *testing.T) {
 	q := queue.New(jobCount)
 	h := &countingHandler{}
 	p := worker.New(3, q, h)
-	p.Start(context.Background())
 
+	// Submit ALL jobs before starting workers so inFlight is fully loaded
+	// before any worker can decrement it. Without this, a fast worker can
+	// process+decrement inFlight to 0 between Submit calls in the main
+	// goroutine, causing Done to fire before all jobs are submitted.
 	for i := 0; i < jobCount; i++ {
 		p.Submit(makeJob(job.NewJobID()))
 	}
+
+	p.Start(context.Background())
 
 	waitDone(t, p, 3*time.Second)
 
@@ -182,14 +187,16 @@ func TestPoolSelfFeedingExpansion(t *testing.T) {
 func TestPoolWorkerCountBounded(t *testing.T) {
 	const size = 3
 
-	q := queue.New(size)
+	q := queue.New(32)
 	h := &countingHandler{}
 	p := worker.New(size, q, h)
-	p.Start(context.Background())
 
+	// Submit before starting so inFlight is loaded before workers can race.
 	for i := 0; i < size; i++ {
 		p.Submit(makeJob(job.NewJobID()))
 	}
+
+	p.Start(context.Background())
 
 	waitDone(t, p, 3*time.Second)
 

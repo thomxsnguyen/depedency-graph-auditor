@@ -21,6 +21,7 @@ type Pool struct {
 	wg       sync.WaitGroup
 	inFlight atomic.Int64
 	done     chan struct{}
+	doneOnce sync.Once                      // ensures close(done) is called exactly once
 	backoff  func(attempt int) time.Duration // injectable; defaults to Backoff
 	dlq      *dlq.DLQ                        // nil = log-only (Phase 2 behaviour)
 }
@@ -136,13 +137,10 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 }
 
 // checkDone closes the done channel if no jobs are in-flight.
+// sync.Once guarantees the channel is closed exactly once even if multiple
+// workers call checkDone concurrently when inFlight hits zero.
 func (p *Pool) checkDone() {
 	if p.inFlight.Load() == 0 {
-		select {
-		case <-p.done:
-			// already closed
-		default:
-			close(p.done)
-		}
+		p.doneOnce.Do(func() { close(p.done) })
 	}
 }
