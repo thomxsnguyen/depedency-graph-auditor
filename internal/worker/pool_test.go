@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,89 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
 )
+
+type durableStore struct {
+	mu           sync.Mutex
+	jobs         map[string]job.Job
+	retries      []job.Job
+	completed    []string
+	deadLettered []string
+}
+
+func newDurableStore() *durableStore {
+	return &durableStore{jobs: make(map[string]job.Job)}
+}
+
+func (s *durableStore) CreateJob(_ context.Context, j job.Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j.ScheduledAt.IsZero() {
+		j.ScheduledAt = time.Now()
+	}
+	j.Status = job.StatusPending
+	s.jobs[j.ID] = j
+	return nil
+}
+
+func (s *durableStore) AcquireJob(_ context.Context) (job.Job, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for id, j := range s.jobs {
+		if j.Status == job.StatusPending && !j.ScheduledAt.After(now) {
+			j.Status = job.StatusRunning
+			s.jobs[id] = j
+			return j, true, nil
+		}
+	}
+	return job.Job{}, false, nil
+}
+
+func (s *durableStore) CompleteJob(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j := s.jobs[id]
+	j.Status = job.StatusCompleted
+	s.jobs[id] = j
+	s.completed = append(s.completed, id)
+	return nil
+}
+
+func (s *durableStore) RetryJob(_ context.Context, j job.Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j.Status = job.StatusPending
+	s.jobs[j.ID] = j
+	s.retries = append(s.retries, j)
+	return nil
+}
+
+func (s *durableStore) DeadLetterJob(_ context.Context, j job.Job, _ error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j.Status = job.StatusDeadLettered
+	s.jobs[j.ID] = j
+	s.deadLettered = append(s.deadLettered, j.ID)
+	return nil
+}
+
+func (s *durableStore) ReclaimStuckJobs(context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reclaimed := 0
+	for id, j := range s.jobs {
+		if j.Status == job.StatusRunning {
+			j.Status = job.StatusPending
+			s.jobs[id] = j
+			reclaimed++
+		}
+	}
+	return reclaimed, nil
+}
+
+func (s *durableStore) DLQEntries(context.Context) ([]dlq.DLQEntry, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // Test handler implementations
@@ -343,6 +427,88 @@ func TestPoolWithoutDLQExhausted(t *testing.T) {
 	p.Submit(j)
 
 	waitDone(t, p, 3*time.Second)
+
+	q.Close()
+	p.Wait()
+}
+
+func TestPoolDurableRetryWaitsForScheduledAt(t *testing.T) {
+	const retryDelay = 40 * time.Millisecond
+
+	s := newDurableStore()
+	q := queue.New(8, s)
+	var mu sync.Mutex
+	var handledAt []time.Time
+	h := handlerFunc(func(_ context.Context, _ job.Job) ([]job.Job, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		handledAt = append(handledAt, time.Now())
+		if len(handledAt) == 1 {
+			return nil, errors.New("transient error")
+		}
+		return nil, nil
+	})
+
+	p := worker.NewWithOptions(1, q, h,
+		worker.WithStore(s),
+		worker.WithBackoff(func(int) time.Duration { return retryDelay }),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = 3
+	p.Submit(j)
+	waitDone(t, p, 3*time.Second)
+
+	mu.Lock()
+	if len(handledAt) != 2 {
+		t.Fatalf("handler calls: got %d, want 2", len(handledAt))
+	}
+	betweenAttempts := handledAt[1].Sub(handledAt[0])
+	mu.Unlock()
+	if betweenAttempts < retryDelay {
+		t.Fatalf("retry delivered after %v, before scheduled delay %v", betweenAttempts, retryDelay)
+	}
+
+	s.mu.Lock()
+	if len(s.retries) != 1 {
+		t.Fatalf("RetryJob calls: got %d, want 1", len(s.retries))
+	}
+	if s.retries[0].Attempts != 1 || s.retries[0].ScheduledAt.IsZero() {
+		t.Fatalf("RetryJob received invalid retry state: %+v", s.retries[0])
+	}
+	if len(s.completed) != 1 || s.completed[0] != j.ID {
+		t.Fatalf("CompleteJob calls: got %v, want [%s]", s.completed, j.ID)
+	}
+	s.mu.Unlock()
+
+	q.Close()
+	p.Wait()
+}
+
+func TestPoolDurableExhaustionUsesStore(t *testing.T) {
+	s := newDurableStore()
+	q := queue.New(1, s)
+	h := handlerFunc(func(context.Context, job.Job) ([]job.Job, error) {
+		return nil, errors.New("permanent error")
+	})
+	p := worker.NewWithOptions(1, q, h,
+		worker.WithStore(s),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = 1
+	p.Submit(j)
+	waitDone(t, p, 3*time.Second)
+
+	s.mu.Lock()
+	if len(s.deadLettered) != 1 || s.deadLettered[0] != j.ID {
+		t.Fatalf("DeadLetterJob calls: got %v, want [%s]", s.deadLettered, j.ID)
+	}
+	s.mu.Unlock()
 
 	q.Close()
 	p.Wait()

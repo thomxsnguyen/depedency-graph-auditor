@@ -10,20 +10,26 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/store"
 )
+
+const defaultPollInterval = 100 * time.Millisecond
 
 // Pool is a fixed number of goroutines that pull jobs from the queue and execute them.
 // Workers are started once and run until the queue is closed.
 type Pool struct {
-	size     int
-	queue    *queue.Queue
-	handler  job.Handler
-	wg       sync.WaitGroup
-	inFlight atomic.Int64
-	done     chan struct{}
-	doneOnce sync.Once                      // ensures close(done) is called exactly once
-	backoff  func(attempt int) time.Duration // injectable; defaults to Backoff
-	dlq      *dlq.DLQ                        // nil = log-only (Phase 2 behaviour)
+	size      int
+	queue     *queue.Queue
+	handler   job.Handler
+	wg        sync.WaitGroup
+	inFlight  atomic.Int64
+	done      chan struct{}
+	doneOnce  sync.Once                       // ensures close(done) is called exactly once
+	backoff   func(attempt int) time.Duration // injectable; defaults to Backoff
+	dlq       *dlq.DLQ                        // nil = log-only (Phase 2 behaviour)
+	store     store.Store
+	pollEvery time.Duration
+	retrying  sync.Map // job ID -> struct{} for retries already counted in inFlight
 }
 
 // Option is a functional option for configuring a Pool.
@@ -41,6 +47,17 @@ func WithDLQ(d *dlq.DLQ) Option {
 	return func(p *Pool) { p.dlq = d }
 }
 
+// WithStore enables durable job lifecycle updates and scheduled retry polling.
+func WithStore(s store.Store) Option {
+	return func(p *Pool) { p.store = s }
+}
+
+// WithPollInterval configures how often the durable retry poller checks for
+// jobs whose ScheduledAt time has elapsed. It is primarily useful in tests.
+func WithPollInterval(interval time.Duration) Option {
+	return func(p *Pool) { p.pollEvery = interval }
+}
+
 // New creates a worker pool with the given size, queue, and handler.
 func New(size int, q *queue.Queue, h job.Handler) *Pool {
 	return NewWithOptions(size, q, h)
@@ -49,20 +66,26 @@ func New(size int, q *queue.Queue, h job.Handler) *Pool {
 // NewWithOptions creates a worker pool and applies any provided options.
 func NewWithOptions(size int, q *queue.Queue, h job.Handler, opts ...Option) *Pool {
 	p := &Pool{
-		size:    size,
-		queue:   q,
-		handler: h,
-		done:    make(chan struct{}),
-		backoff: Backoff,
+		size:      size,
+		queue:     q,
+		handler:   h,
+		done:      make(chan struct{}),
+		backoff:   Backoff,
+		pollEvery: defaultPollInterval,
 	}
 	for _, o := range opts {
 		o(p)
 	}
+	p.inFlight.Store(int64(q.Len()))
 	return p
 }
 
 // Start launches `size` worker goroutines.
 func (p *Pool) Start(ctx context.Context) {
+	if p.store != nil {
+		p.wg.Add(1)
+		go p.pollLoop(ctx)
+	}
 	for i := 0; i < p.size; i++ {
 		p.wg.Add(1)
 		go p.workerLoop(ctx, i)
@@ -106,14 +129,28 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 				delay := p.backoff(j.Attempts)
 				log.Printf("worker %d: job %s failed (attempt %d/%d), retrying in %v: %v",
 					id, j.ID, j.Attempts, j.MaxAttempts, delay, err)
-				time.Sleep(delay)
-				p.queue.Submit(j) // re-queue directly — inFlight counter is unchanged
+				if p.store != nil {
+					j.ScheduledAt = time.Now().Add(delay)
+					p.retrying.Store(j.ID, struct{}{})
+					if retryErr := p.store.RetryJob(ctx, j); retryErr != nil {
+						p.retrying.Delete(j.ID)
+						log.Printf("worker %d: schedule retry for job %s: %v", id, j.ID, retryErr)
+					}
+				} else {
+					time.Sleep(delay)
+					p.queue.Submit(j)
+				}
 				continue
 			}
 			// Attempts exhausted — quarantine in DLQ if configured, then release.
 			j.Status = job.StatusDeadLettered
 			if p.dlq != nil {
 				p.dlq.Publish(j, err)
+			}
+			if p.store != nil {
+				if deadErr := p.store.DeadLetterJob(ctx, j, err); deadErr != nil {
+					log.Printf("worker %d: persist dead-lettered job %s: %v", id, j.ID, deadErr)
+				}
 			}
 			log.Printf("worker %d: job %s dead-lettered after %d attempts: %v",
 				id, j.ID, j.Attempts, err)
@@ -123,6 +160,11 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 		}
 
 		j.Status = job.StatusCompleted
+		if p.store != nil {
+			if err := p.store.CompleteJob(ctx, j.ID); err != nil {
+				log.Printf("worker %d: complete job %s: %v", id, j.ID, err)
+			}
+		}
 
 		// Enqueue child jobs before decrementing this job's counter.
 		// Each child increments inFlight, so the counter stays positive
@@ -133,6 +175,44 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 
 		p.inFlight.Add(-1)
 		p.checkDone()
+	}
+}
+
+// pollLoop releases pending jobs once their durable ScheduledAt timestamp is
+// eligible. Retries scheduled by this process remain counted in inFlight;
+// jobs discovered after a restart are added to the count when first acquired.
+func (p *Pool) pollLoop(ctx context.Context) {
+	defer p.wg.Done()
+	ticker := time.NewTicker(p.pollEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.dispatchReady(ctx)
+		}
+	}
+}
+
+func (p *Pool) dispatchReady(ctx context.Context) {
+	for {
+		j, found, err := p.store.AcquireJob(ctx)
+		if err != nil {
+			log.Printf("worker: poll scheduled jobs: %v", err)
+			return
+		}
+		if !found {
+			return
+		}
+
+		if _, wasRetry := p.retrying.LoadAndDelete(j.ID); !wasRetry {
+			p.inFlight.Add(1)
+		}
+		p.queue.DispatchAcquired(j)
 	}
 }
 

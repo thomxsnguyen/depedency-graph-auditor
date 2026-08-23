@@ -1,12 +1,72 @@
 package queue_test
 
 import (
+	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 )
+
+type fakeStore struct {
+	mu           sync.Mutex
+	jobs         []job.Job
+	createErr    error
+	reclaimErr   error
+	reclaimCalls int
+}
+
+func (s *fakeStore) CreateJob(_ context.Context, j job.Job) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return s.createErr
+	}
+	s.jobs = append(s.jobs, j)
+	return nil
+}
+
+func (s *fakeStore) AcquireJob(_ context.Context) (job.Job, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.jobs {
+		if s.jobs[i].Status == job.StatusPending {
+			s.jobs[i].Status = job.StatusRunning
+			return s.jobs[i], true, nil
+		}
+	}
+	return job.Job{}, false, nil
+}
+
+func (s *fakeStore) CompleteJob(context.Context, string) error           { return nil }
+func (s *fakeStore) RetryJob(context.Context, job.Job) error             { return nil }
+func (s *fakeStore) DeadLetterJob(context.Context, job.Job, error) error { return nil }
+
+func (s *fakeStore) ReclaimStuckJobs(_ context.Context) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reclaimCalls++
+	if s.reclaimErr != nil {
+		return 0, s.reclaimErr
+	}
+
+	reclaimed := 0
+	for i := range s.jobs {
+		if s.jobs[i].Status == job.StatusRunning {
+			s.jobs[i].Status = job.StatusPending
+			reclaimed++
+		}
+	}
+	return reclaimed, nil
+}
+
+func (s *fakeStore) DLQEntries(context.Context) ([]dlq.DLQEntry, error) {
+	return nil, nil
+}
 
 // makeJob is a convenience helper to create a minimal job with the given ID.
 func makeJob(id string) job.Job {
@@ -97,5 +157,63 @@ func TestCloseAndDrainReturnsAllJobs(t *testing.T) {
 	}
 	if ok3 {
 		t.Fatal("third dequeue after close+drain: expected ok=false")
+	}
+}
+
+func TestNewWithStoreReclaimsAndReloadsPendingJobs(t *testing.T) {
+	store := &fakeStore{jobs: []job.Job{
+		{ID: "pending", Type: "test", Status: job.StatusPending},
+		{ID: "crashed", Type: "test", Status: job.StatusRunning},
+	}}
+
+	// A buffer smaller than the startup backlog must not block construction.
+	q := queue.New(1, store)
+
+	for _, wantID := range []string{"pending", "crashed"} {
+		got, ok := q.Dequeue()
+		if !ok {
+			t.Fatalf("Dequeue returned ok=false for reloaded job %q", wantID)
+		}
+		if got.ID != wantID {
+			t.Fatalf("Dequeue: got ID %q, want %q", got.ID, wantID)
+		}
+		if got.Status != job.StatusRunning {
+			t.Fatalf("Dequeue: got status %q, want %q", got.Status, job.StatusRunning)
+		}
+	}
+	if store.reclaimCalls != 1 {
+		t.Fatalf("ReclaimStuckJobs calls: got %d, want 1", store.reclaimCalls)
+	}
+}
+
+func TestSubmitWithStorePersistsBeforeAcquire(t *testing.T) {
+	store := &fakeStore{}
+	q := queue.New(1, store)
+	want := makeJob("persisted")
+
+	q.Submit(want)
+	got, ok := q.Dequeue()
+
+	if !ok {
+		t.Fatal("Dequeue returned ok=false for a persisted job")
+	}
+	if got.ID != want.ID {
+		t.Fatalf("Dequeue: got ID %q, want %q", got.ID, want.ID)
+	}
+	if got.Status != job.StatusRunning {
+		t.Fatalf("Dequeue: got status %q, want %q", got.Status, job.StatusRunning)
+	}
+}
+
+func TestSubmitWithStoreDoesNotQueueCreateFailure(t *testing.T) {
+	store := &fakeStore{createErr: errors.New("database unavailable")}
+	q := queue.New(1, store)
+
+	q.Submit(makeJob("not-persisted"))
+	q.Close()
+	got, ok := q.Dequeue()
+
+	if ok {
+		t.Fatalf("Dequeue returned queued job after CreateJob failed: %+v", got)
 	}
 }
