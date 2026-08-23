@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
@@ -60,7 +61,9 @@ func (h *selfFeedingHandler) Handle(_ context.Context, j job.Job) ([]job.Job, er
 // ---------------------------------------------------------------------------
 
 func makeJob(id string) job.Job {
-	return job.Job{ID: id, Type: "0", Status: job.StatusPending}
+	j := job.NewJob("0", nil)
+	j.ID = id
+	return j
 }
 
 // waitDone waits for the pool's Done signal or times out.
@@ -266,6 +269,73 @@ func TestPoolExhausted(t *testing.T) {
 	if got := calls.Load(); got != maxAttempts {
 		t.Errorf("exhausted: handler calls got %d, want %d", got, maxAttempts)
 	}
+
+	q.Close()
+	p.Wait()
+}
+
+// TestPoolWithDLQExhausted verifies that when a DLQ is wired and a job
+// exhausts all attempts: the entry appears in dlq.Entries(), the job has
+// StatusDeadLettered, the error string is non-empty, and Done fires cleanly.
+func TestPoolWithDLQExhausted(t *testing.T) {
+	const maxAttempts = 3
+
+	q := queue.New(8)
+	d := &dlq.DLQ{}
+	h := handlerFunc(func(_ context.Context, _ job.Job) ([]job.Job, error) {
+		return nil, errors.New("permanent error")
+	})
+
+	p := worker.NewWithOptions(2, q, h,
+		worker.WithBackoff(noBackoff),
+		worker.WithDLQ(d),
+	)
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = maxAttempts
+	p.Submit(j)
+
+	waitDone(t, p, 3*time.Second)
+
+	entries := d.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("DLQ entries: got %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Job.ID != j.ID {
+		t.Errorf("DLQ entry job ID: got %q, want %q", e.Job.ID, j.ID)
+	}
+	if e.Job.Status != job.StatusDeadLettered {
+		t.Errorf("DLQ entry status: got %q, want %q", e.Job.Status, job.StatusDeadLettered)
+	}
+	if e.Err == "" {
+		t.Error("DLQ entry Err: got empty string, want non-empty error message")
+	}
+
+	q.Close()
+	p.Wait()
+}
+
+// TestPoolWithoutDLQExhausted verifies that when no DLQ is configured,
+// exhausted jobs are only logged (Phase 2 fallback) — Done fires and
+// there is no panic.
+func TestPoolWithoutDLQExhausted(t *testing.T) {
+	const maxAttempts = 3
+
+	q := queue.New(8)
+	h := handlerFunc(func(_ context.Context, _ job.Job) ([]job.Job, error) {
+		return nil, errors.New("permanent error")
+	})
+
+	p := worker.NewWithOptions(2, q, h, worker.WithBackoff(noBackoff))
+	p.Start(context.Background())
+
+	j := job.NewJob("test", nil)
+	j.MaxAttempts = maxAttempts
+	p.Submit(j)
+
+	waitDone(t, p, 3*time.Second)
 
 	q.Close()
 	p.Wait()

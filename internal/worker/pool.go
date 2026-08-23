@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 )
@@ -21,6 +22,7 @@ type Pool struct {
 	inFlight atomic.Int64
 	done     chan struct{}
 	backoff  func(attempt int) time.Duration // injectable; defaults to Backoff
+	dlq      *dlq.DLQ                        // nil = log-only (Phase 2 behaviour)
 }
 
 // Option is a functional option for configuring a Pool.
@@ -30,6 +32,12 @@ type Option func(*Pool)
 // a zero-delay stub so the suite doesn't block waiting for real sleep durations.
 func WithBackoff(fn func(attempt int) time.Duration) Option {
 	return func(p *Pool) { p.backoff = fn }
+}
+
+// WithDLQ wires a DLQ into the pool. Exhausted jobs are published to it with
+// StatusDeadLettered set. When not provided, exhausted jobs are only logged.
+func WithDLQ(d *dlq.DLQ) Option {
+	return func(p *Pool) { p.dlq = d }
 }
 
 // New creates a worker pool with the given size, queue, and handler.
@@ -101,8 +109,12 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 				p.queue.Submit(j) // re-queue directly — inFlight counter is unchanged
 				continue
 			}
-			// Attempts exhausted — log and release. Phase 3 upgrades this to a DLQ.
-			log.Printf("worker %d: job %s exhausted after %d attempts: %v",
+			// Attempts exhausted — quarantine in DLQ if configured, then release.
+			j.Status = job.StatusDeadLettered
+			if p.dlq != nil {
+				p.dlq.Publish(j, err)
+			}
+			log.Printf("worker %d: job %s dead-lettered after %d attempts: %v",
 				id, j.ID, j.Attempts, err)
 			p.inFlight.Add(-1)
 			p.checkDone()
