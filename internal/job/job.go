@@ -16,13 +16,31 @@ const (
 	StatusCompleted Status = "completed"
 )
 
+// DefaultMaxAttempts is the number of times a job will be tried before it is
+// considered exhausted and dropped (Phase 3 will move it to a DLQ instead).
+const DefaultMaxAttempts = 5
+
 // Job is the generic unit of work submitted to the queue.
 // It carries a type identifier, an arbitrary payload, and its current status.
 type Job struct {
-	ID      string
-	Type    string
-	Payload json.RawMessage
-	Status  Status
+	ID          string
+	Type        string
+	Payload     json.RawMessage
+	Status      Status
+	Attempts    int // how many times this job has been tried (0 = never run)
+	MaxAttempts int // maximum tries before the job is abandoned
+}
+
+// NewJob constructs a Job with a fresh ID, pending status, and the default
+// retry limit. Callers may override MaxAttempts after construction if needed.
+func NewJob(jobType string, payload json.RawMessage) Job {
+	return Job{
+		ID:          NewJobID(),
+		Type:        jobType,
+		Payload:     payload,
+		Status:      StatusPending,
+		MaxAttempts: DefaultMaxAttempts,
+	}
 }
 
 // Handler processes a job and returns zero or more new jobs to enqueue.
