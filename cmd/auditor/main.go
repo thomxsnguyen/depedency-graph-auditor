@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
@@ -17,6 +20,8 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
 )
 
+const defaultShutdownTimeout = 30 * time.Second
+
 func main() {
 	// 1. Read a package.json path from CLI args.
 	if len(os.Args) < 2 {
@@ -24,6 +29,10 @@ func main() {
 		os.Exit(1)
 	}
 	pkgJSONPath := os.Args[1]
+	shutdownTimeout, err := shutdownTimeoutFromEnv()
+	if err != nil {
+		log.Fatalf("configuration: %v", err)
+	}
 
 	// 2. Parse it → extract direct dependencies (prod + dev by default).
 	deps, err := depfile.ParsePackageJSON(pkgJSONPath, true)
@@ -43,17 +52,24 @@ func main() {
 	//    job is processed — no pre-flight resolution is needed here.
 
 	// 4. Create infrastructure.
-	ctx := context.Background()
+	workCtx := context.Background()
+	signalCtx, stopSignals := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stopSignals()
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required (see .env.example)")
 	}
-	dbPool, err := pgxpool.New(ctx, databaseURL)
+	dbPool, err := pgxpool.New(workCtx, databaseURL)
 	if err != nil {
 		log.Fatalf("postgres: open pool: %v", err)
 	}
 	defer dbPool.Close()
-	if err := dbPool.Ping(ctx); err != nil {
+	if err := dbPool.Ping(workCtx); err != nil {
 		log.Fatalf("postgres: ping: %v", err)
 	}
 
@@ -84,18 +100,42 @@ func main() {
 	}
 
 	// 6 & 7. Start the worker pool.
-	pool.Start(ctx)
+	pool.Start(workCtx)
 
-	// 8. Block until inFlight drops to zero (graph fully traversed).
-	<-pool.Done()
+	// 8. Wait for normal completion or a shutdown signal. The signal context is
+	// deliberately not passed to the pool, so active handlers keep their work
+	// context while the pool drains.
+	select {
+	case <-pool.Done():
+	case <-signalCtx.Done():
+	}
 
-	// Close the queue so worker goroutines exit, then wait for them.
-	q.Close()
-	pool.Wait()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelShutdown()
+	if err := pool.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown deadline %s exceeded: %v", shutdownTimeout, err)
+		os.Exit(1)
+	}
 
 	// 9 & 10. Generate and print the report.
 	report := auditor.GenerateReport(pkgStore, edgeStore, rootName)
 	fmt.Print(report.Summary)
+}
+
+func shutdownTimeoutFromEnv() (time.Duration, error) {
+	value := os.Getenv("SHUTDOWN_TIMEOUT")
+	if value == "" {
+		return defaultShutdownTimeout, nil
+	}
+
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("SHUTDOWN_TIMEOUT %q is not a valid duration: %w", value, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("SHUTDOWN_TIMEOUT must be positive, got %q", value)
+	}
+	return timeout, nil
 }
 
 // rootNameFromFile reads the "name" field from a package.json file.
