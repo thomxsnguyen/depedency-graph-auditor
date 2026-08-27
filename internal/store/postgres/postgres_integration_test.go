@@ -166,6 +166,9 @@ func TestPhase4ProcessHelper(t *testing.T) {
 	s := storepg.New(pool)
 	j := job.NewJob("integration", json.RawMessage(`{"source":"helper"}`))
 	j.ID = os.Getenv("PHASE4_JOB_ID")
+	// Keep immediate acquisition deterministic even if the application and
+	// database clocks differ by a few milliseconds.
+	j.ScheduledAt = time.Now().Add(-time.Second)
 	if err := s.CreateJob(ctx, j); err != nil {
 		t.Fatal(err)
 	}

@@ -209,7 +209,9 @@ func TestSubmitWithStoreDoesNotQueueCreateFailure(t *testing.T) {
 	store := &fakeStore{createErr: errors.New("database unavailable")}
 	q := queue.New(1, store)
 
-	q.Submit(makeJob("not-persisted"))
+	if err := q.Submit(makeJob("not-persisted")); err == nil {
+		t.Fatal("Submit returned nil after CreateJob failed")
+	}
 	q.Close()
 	got, ok := q.Dequeue()
 
@@ -236,5 +238,106 @@ func TestDequeueSkipsSignalAlreadyAcquiredByPoller(t *testing.T) {
 	}
 	if got.ID != want.ID || got.Status != job.StatusRunning {
 		t.Fatalf("Dequeue: got %+v, want acquired job %q", got, want.ID)
+	}
+}
+
+func TestSubmitAfterCloseReturnsErrClosed(t *testing.T) {
+	q := queue.New(1)
+	q.Close()
+
+	if err := q.Submit(makeJob("late")); !errors.Is(err, queue.ErrClosed) {
+		t.Fatalf("Submit error: got %v, want ErrClosed", err)
+	}
+}
+
+func TestPersistAfterCloseWritesStoreWithoutDispatch(t *testing.T) {
+	store := &fakeStore{}
+	q := queue.New(1, store)
+	q.Close()
+	want := makeJob("restart-frontier")
+
+	if err := q.Persist(context.Background(), want); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.jobs) != 1 || store.jobs[0].ID != want.ID {
+		t.Fatalf("persisted jobs: got %+v, want %q", store.jobs, want.ID)
+	}
+}
+
+func TestPersistWithoutStoreReturnsErrNoStore(t *testing.T) {
+	q := queue.New(1)
+	if err := q.Persist(context.Background(), makeJob("no-store")); !errors.Is(err, queue.ErrNoStore) {
+		t.Fatalf("Persist error: got %v, want ErrNoStore", err)
+	}
+}
+
+func TestDispatchAcquiredAfterCloseReturnsErrClosed(t *testing.T) {
+	q := queue.New(1)
+	q.Close()
+
+	if err := q.DispatchAcquired(makeJob("late")); !errors.Is(err, queue.ErrClosed) {
+		t.Fatalf("DispatchAcquired error: got %v, want ErrClosed", err)
+	}
+}
+
+func TestCloseIsConcurrentAndIdempotent(t *testing.T) {
+	q := queue.New(1)
+	const callers = 50
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			q.Close()
+		}()
+	}
+	wg.Wait()
+
+	if _, ok := q.Dequeue(); ok {
+		t.Fatal("Dequeue returned ok=true after concurrent Close calls")
+	}
+}
+
+func TestCloseReleasesBlockedDispatchWithoutPanic(t *testing.T) {
+	q := queue.New(0)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		close(started)
+		result <- q.DispatchAcquired(makeJob("blocked"))
+	}()
+	<-started
+
+	q.Close()
+	select {
+	case err := <-result:
+		if !errors.Is(err, queue.ErrClosed) {
+			t.Fatalf("DispatchAcquired error: got %v, want ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked DispatchAcquired did not return after Close")
+	}
+}
+
+func TestCloseReleasesBlockedSubmitWithoutPanic(t *testing.T) {
+	q := queue.New(0)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		close(started)
+		result <- q.Submit(makeJob("blocked"))
+	}()
+	<-started
+
+	q.Close()
+	select {
+	case err := <-result:
+		if !errors.Is(err, queue.ErrClosed) {
+			t.Fatalf("Submit error: got %v, want ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked Submit did not return after Close")
 	}
 }
