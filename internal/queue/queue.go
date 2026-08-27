@@ -76,23 +76,28 @@ func (q *Queue) Submit(j job.Job) {
 // Dequeue returns the next job. Blocks until one is available or the channel is closed.
 // The bool return is false when the channel is closed and drained, signaling the worker to stop.
 func (q *Queue) Dequeue() (job.Job, bool) {
-	queued, ok := <-q.ch
-	if !ok || q.store == nil {
-		return queued, ok
-	}
-	if queued.ID != "" && queued.Status == job.StatusRunning {
-		return queued, true
-	}
+	for {
+		queued, ok := <-q.ch
+		if !ok || q.store == nil {
+			return queued, ok
+		}
+		if queued.ID != "" && queued.Status == job.StatusRunning {
+			return queued, true
+		}
 
-	acquired, found, err := q.store.AcquireJob(context.Background())
-	if err != nil {
-		log.Printf("queue: acquire job: %v", err)
-		return job.Job{}, false
+		acquired, found, err := q.store.AcquireJob(context.Background())
+		if err != nil {
+			log.Printf("queue: acquire job: %v", err)
+			continue
+		}
+		if !found {
+			// The poller may have acquired this signal's row first and queued
+			// the acquired job behind it. Ignore the stale signal and keep
+			// waiting; only a closed channel stops a worker.
+			continue
+		}
+		return acquired, true
 	}
-	if !found {
-		return job.Job{}, false
-	}
-	return acquired, true
 }
 
 // DispatchAcquired pushes a job that has already been atomically acquired from

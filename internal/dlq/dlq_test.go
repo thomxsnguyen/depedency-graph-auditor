@@ -1,6 +1,7 @@
 package dlq_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -8,6 +9,19 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 )
+
+type fakePersistentStore struct {
+	entries []dlq.DLQEntry
+}
+
+func (s *fakePersistentStore) DeadLetterJob(_ context.Context, j job.Job, err error) error {
+	s.entries = append(s.entries, dlq.DLQEntry{Job: j, Err: err.Error()})
+	return nil
+}
+
+func (s *fakePersistentStore) DLQEntries(context.Context) ([]dlq.DLQEntry, error) {
+	return append([]dlq.DLQEntry(nil), s.entries...), nil
+}
 
 // TestDLQPublish verifies that Publish stores an entry with the correct job,
 // error string, and a non-zero DeadAt timestamp.
@@ -68,5 +82,21 @@ func TestDLQConcurrent(t *testing.T) {
 	entries := d.Entries()
 	if len(entries) != n {
 		t.Errorf("concurrent Publish: got %d entries, want %d", len(entries), n)
+	}
+}
+
+func TestPersistentDLQUsesStore(t *testing.T) {
+	store := &fakePersistentStore{}
+	d := dlq.New(store)
+	j := job.NewJob("persistent", nil)
+
+	d.Publish(j, errors.New("stored failure"))
+	entries := d.Entries()
+
+	if len(entries) != 1 {
+		t.Fatalf("Entries: got %d, want 1", len(entries))
+	}
+	if entries[0].Job.ID != j.ID || entries[0].Err != "stored failure" {
+		t.Fatalf("Entries: got %+v", entries[0])
 	}
 }

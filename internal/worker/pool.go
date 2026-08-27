@@ -29,7 +29,7 @@ type Pool struct {
 	dlq       *dlq.DLQ                        // nil = log-only (Phase 2 behaviour)
 	store     store.Store
 	pollEvery time.Duration
-	retrying  sync.Map // job ID -> struct{} for retries already counted in inFlight
+	counted   sync.Map // job ID -> struct{} for jobs already counted in inFlight
 }
 
 // Option is a functional option for configuring a Pool.
@@ -106,6 +106,7 @@ func (p *Pool) Done() <-chan struct{} {
 // Submit wraps the queue's Submit with in-flight tracking.
 // The counter increments here and decrements when the worker finishes processing.
 func (p *Pool) Submit(j job.Job) {
+	p.counted.Store(j.ID, struct{}{})
 	p.inFlight.Add(1)
 	p.queue.Submit(j)
 }
@@ -120,6 +121,10 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 			return // channel closed, exit
 		}
 
+		// Startup-reclaimed jobs were included in the queue length before their
+		// IDs were known to the pool. Record the ID now so a later retry is not
+		// counted a second time by the poller.
+		p.counted.Store(j.ID, struct{}{})
 		j.Status = job.StatusRunning
 		newJobs, err := p.handler.Handle(ctx, j)
 
@@ -131,9 +136,7 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 					id, j.ID, j.Attempts, j.MaxAttempts, delay, err)
 				if p.store != nil {
 					j.ScheduledAt = time.Now().Add(delay)
-					p.retrying.Store(j.ID, struct{}{})
 					if retryErr := p.store.RetryJob(ctx, j); retryErr != nil {
-						p.retrying.Delete(j.ID)
 						log.Printf("worker %d: schedule retry for job %s: %v", id, j.ID, retryErr)
 					}
 				} else {
@@ -146,14 +149,14 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 			j.Status = job.StatusDeadLettered
 			if p.dlq != nil {
 				p.dlq.Publish(j, err)
-			}
-			if p.store != nil {
+			} else if p.store != nil {
 				if deadErr := p.store.DeadLetterJob(ctx, j, err); deadErr != nil {
 					log.Printf("worker %d: persist dead-lettered job %s: %v", id, j.ID, deadErr)
 				}
 			}
 			log.Printf("worker %d: job %s dead-lettered after %d attempts: %v",
 				id, j.ID, j.Attempts, err)
+			p.counted.Delete(j.ID)
 			p.inFlight.Add(-1)
 			p.checkDone()
 			continue
@@ -173,14 +176,15 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 			p.Submit(newJob)
 		}
 
+		p.counted.Delete(j.ID)
 		p.inFlight.Add(-1)
 		p.checkDone()
 	}
 }
 
 // pollLoop releases pending jobs once their durable ScheduledAt timestamp is
-// eligible. Retries scheduled by this process remain counted in inFlight;
-// jobs discovered after a restart are added to the count when first acquired.
+// eligible. Jobs already submitted or retried by this process remain counted
+// in inFlight; jobs discovered after a restart are counted when first acquired.
 func (p *Pool) pollLoop(ctx context.Context) {
 	defer p.wg.Done()
 	ticker := time.NewTicker(p.pollEvery)
@@ -209,7 +213,7 @@ func (p *Pool) dispatchReady(ctx context.Context) {
 			return
 		}
 
-		if _, wasRetry := p.retrying.LoadAndDelete(j.ID); !wasRetry {
+		if _, alreadyCounted := p.counted.LoadOrStore(j.ID, struct{}{}); !alreadyCounted {
 			p.inFlight.Add(1)
 		}
 		p.queue.DispatchAcquired(j)

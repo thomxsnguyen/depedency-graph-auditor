@@ -7,10 +7,13 @@ import (
 	"log"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
+	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
 )
 
@@ -40,8 +43,24 @@ func main() {
 	//    job is processed — no pre-flight resolution is needed here.
 
 	// 4. Create infrastructure.
+	ctx := context.Background()
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is required (see .env.example)")
+	}
+	dbPool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		log.Fatalf("postgres: open pool: %v", err)
+	}
+	defer dbPool.Close()
+	if err := dbPool.Ping(ctx); err != nil {
+		log.Fatalf("postgres: ping: %v", err)
+	}
+
+	jobStore := storepg.New(dbPool)
 	const bufferSize = 100
-	q := queue.New(bufferSize)
+	q := queue.New(bufferSize, jobStore)
+	deadLetters := dlq.New(jobStore)
 
 	pkgStore := auditor.NewPackageStore()
 	edgeStore := auditor.NewEdgeStore()
@@ -51,23 +70,20 @@ func main() {
 
 	// 5. Seed the queue: one job per direct dependency.
 	const poolSize = 10
-	pool := worker.New(poolSize, q, handler)
+	pool := worker.NewWithOptions(poolSize, q, handler,
+		worker.WithStore(jobStore),
+		worker.WithDLQ(deadLetters),
+	)
 
 	for _, d := range deps {
 		payload, err := json.Marshal(auditor.AuditPayload{Name: d.Name, Version: d.VersionRange})
 		if err != nil {
 			log.Fatalf("marshal seed job for %s: %v", d.Name, err)
 		}
-		pool.Submit(job.Job{
-			ID:      job.NewJobID(),
-			Type:    "audit_package",
-			Payload: payload,
-			Status:  job.StatusPending,
-		})
+		pool.Submit(job.NewJob("audit_package", payload))
 	}
 
 	// 6 & 7. Start the worker pool.
-	ctx := context.Background()
 	pool.Start(ctx)
 
 	// 8. Block until inFlight drops to zero (graph fully traversed).

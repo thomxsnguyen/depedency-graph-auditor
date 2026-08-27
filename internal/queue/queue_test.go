@@ -217,3 +217,24 @@ func TestSubmitWithStoreDoesNotQueueCreateFailure(t *testing.T) {
 		t.Fatalf("Dequeue returned queued job after CreateJob failed: %+v", got)
 	}
 }
+
+func TestDequeueSkipsSignalAlreadyAcquiredByPoller(t *testing.T) {
+	store := &fakeStore{}
+	q := queue.New(2, store)
+	want := makeJob("poller-won")
+	q.Submit(want)
+
+	acquired, found, err := store.AcquireJob(context.Background())
+	if err != nil || !found {
+		t.Fatalf("poller AcquireJob: found=%v err=%v", found, err)
+	}
+	q.DispatchAcquired(acquired)
+
+	got, ok := q.Dequeue()
+	if !ok {
+		t.Fatal("Dequeue returned ok=false after a stale wake-up signal")
+	}
+	if got.ID != want.ID || got.Status != job.StatusRunning {
+		t.Fatalf("Dequeue: got %+v, want acquired job %q", got, want.ID)
+	}
+}

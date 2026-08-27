@@ -495,6 +495,7 @@ func TestPoolDurableExhaustionUsesStore(t *testing.T) {
 	})
 	p := worker.NewWithOptions(1, q, h,
 		worker.WithStore(s),
+		worker.WithDLQ(dlq.New(s)),
 		worker.WithPollInterval(time.Millisecond),
 	)
 	p.Start(context.Background())
