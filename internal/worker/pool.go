@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -15,13 +16,17 @@ import (
 
 const defaultPollInterval = 100 * time.Millisecond
 
+var ErrShuttingDown = errors.New("worker pool is shutting down")
+
 // Pool is a fixed number of goroutines that pull jobs from the queue and execute them.
 // Workers are started once and run until the queue is closed.
 type Pool struct {
 	size      int
 	queue     *queue.Queue
 	handler   job.Handler
-	wg        sync.WaitGroup
+	workerWG  sync.WaitGroup
+	pollerWG  sync.WaitGroup
+	submitWG  sync.WaitGroup
 	inFlight  atomic.Int64
 	done      chan struct{}
 	doneOnce  sync.Once                       // ensures close(done) is called exactly once
@@ -30,6 +35,15 @@ type Pool struct {
 	store     store.Store
 	pollEvery time.Duration
 	counted   sync.Map // job ID -> struct{} for jobs already counted in inFlight
+
+	lifecycleMu  sync.Mutex
+	started      bool
+	stopping     bool
+	accepting    atomic.Bool
+	pollStop     chan struct{}
+	pollStopOnce sync.Once
+	shutdownOnce sync.Once
+	shutdownDone chan struct{}
 }
 
 // Option is a functional option for configuring a Pool.
@@ -66,35 +80,46 @@ func New(size int, q *queue.Queue, h job.Handler) *Pool {
 // NewWithOptions creates a worker pool and applies any provided options.
 func NewWithOptions(size int, q *queue.Queue, h job.Handler, opts ...Option) *Pool {
 	p := &Pool{
-		size:      size,
-		queue:     q,
-		handler:   h,
-		done:      make(chan struct{}),
-		backoff:   Backoff,
-		pollEvery: defaultPollInterval,
+		size:         size,
+		queue:        q,
+		handler:      h,
+		done:         make(chan struct{}),
+		backoff:      Backoff,
+		pollEvery:    defaultPollInterval,
+		pollStop:     make(chan struct{}),
+		shutdownDone: make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(p)
 	}
 	p.inFlight.Store(int64(q.Len()))
+	p.accepting.Store(true)
 	return p
 }
 
 // Start launches `size` worker goroutines.
 func (p *Pool) Start(ctx context.Context) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	if p.started || p.stopping {
+		return
+	}
+	p.started = true
+
 	if p.store != nil {
-		p.wg.Add(1)
+		p.pollerWG.Add(1)
 		go p.pollLoop(ctx)
 	}
 	for i := 0; i < p.size; i++ {
-		p.wg.Add(1)
+		p.workerWG.Add(1)
 		go p.workerLoop(ctx, i)
 	}
 }
 
-// Wait blocks until all workers have exited.
+// Wait blocks until the poller and all workers have exited.
 func (p *Pool) Wait() {
-	p.wg.Wait()
+	p.pollerWG.Wait()
+	p.workerWG.Wait()
 }
 
 // Done returns a channel that is closed when all in-flight work is complete.
@@ -103,17 +128,62 @@ func (p *Pool) Done() <-chan struct{} {
 	return p.done
 }
 
-// Submit wraps the queue's Submit with in-flight tracking.
-// The counter increments here and decrements when the worker finishes processing.
-func (p *Pool) Submit(j job.Job) {
+// Submit accepts external work while the pool is running and tracks it until
+// processing finishes. Once shutdown begins, new submissions are rejected.
+func (p *Pool) Submit(j job.Job) error {
+	p.lifecycleMu.Lock()
+	if p.stopping {
+		p.lifecycleMu.Unlock()
+		return ErrShuttingDown
+	}
+	p.submitWG.Add(1)
+	p.lifecycleMu.Unlock()
+	defer p.submitWG.Done()
+
 	p.counted.Store(j.ID, struct{}{})
 	p.inFlight.Add(1)
-	p.queue.Submit(j)
+	if err := p.queue.Submit(j); err != nil {
+		p.counted.Delete(j.ID)
+		p.inFlight.Add(-1)
+		if errors.Is(err, queue.ErrClosed) {
+			return ErrShuttingDown
+		}
+		return err
+	}
+	return nil
+}
+
+// Shutdown stops intake and polling, closes the queue after the poller exits,
+// and waits for workers to drain. The shutdown sequence continues if a caller's
+// context expires, so another caller can still wait for the same terminal state.
+func (p *Pool) Shutdown(ctx context.Context) error {
+	p.shutdownOnce.Do(func() {
+		p.lifecycleMu.Lock()
+		p.stopping = true
+		p.accepting.Store(false)
+		p.pollStopOnce.Do(func() { close(p.pollStop) })
+		p.lifecycleMu.Unlock()
+
+		go func() {
+			p.pollerWG.Wait()
+			p.submitWG.Wait()
+			p.queue.Close()
+			p.workerWG.Wait()
+			close(p.shutdownDone)
+		}()
+	})
+
+	select {
+	case <-p.shutdownDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // workerLoop is the main loop for each worker goroutine.
 func (p *Pool) workerLoop(ctx context.Context, id int) {
-	defer p.wg.Done()
+	defer p.workerWG.Done()
 
 	for {
 		j, ok := p.queue.Dequeue()
@@ -141,7 +211,9 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 					}
 				} else {
 					time.Sleep(delay)
-					p.queue.Submit(j)
+					if submitErr := p.queue.Submit(j); submitErr != nil {
+						log.Printf("worker %d: requeue job %s: %v", id, j.ID, submitErr)
+					}
 				}
 				continue
 			}
@@ -173,7 +245,7 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 		// Each child increments inFlight, so the counter stays positive
 		// as long as there's still work to do.
 		for _, newJob := range newJobs {
-			p.Submit(newJob)
+			p.submitChild(ctx, id, newJob)
 		}
 
 		p.counted.Delete(j.ID)
@@ -186,13 +258,15 @@ func (p *Pool) workerLoop(ctx context.Context, id int) {
 // eligible. Jobs already submitted or retried by this process remain counted
 // in inFlight; jobs discovered after a restart are counted when first acquired.
 func (p *Pool) pollLoop(ctx context.Context) {
-	defer p.wg.Done()
+	defer p.pollerWG.Done()
 	ticker := time.NewTicker(p.pollEvery)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-p.pollStop:
 			return
 		case <-p.done:
 			return
@@ -204,6 +278,12 @@ func (p *Pool) pollLoop(ctx context.Context) {
 
 func (p *Pool) dispatchReady(ctx context.Context) {
 	for {
+		select {
+		case <-p.pollStop:
+			return
+		default:
+		}
+
 		j, found, err := p.store.AcquireJob(ctx)
 		if err != nil {
 			log.Printf("worker: poll scheduled jobs: %v", err)
@@ -216,7 +296,28 @@ func (p *Pool) dispatchReady(ctx context.Context) {
 		if _, alreadyCounted := p.counted.LoadOrStore(j.ID, struct{}{}); !alreadyCounted {
 			p.inFlight.Add(1)
 		}
-		p.queue.DispatchAcquired(j)
+		if err := p.queue.DispatchAcquired(j); err != nil {
+			log.Printf("worker: dispatch acquired job %s: %v", j.ID, err)
+			return
+		}
+	}
+}
+
+// submitChild keeps self-feeding work in the current process while running.
+// During shutdown it persists the next frontier without dispatching it, so a
+// later process can resume the graph without extending this process's drain.
+func (p *Pool) submitChild(ctx context.Context, workerID int, j job.Job) {
+	if p.accepting.Load() {
+		if err := p.Submit(j); err == nil {
+			return
+		} else if !errors.Is(err, ErrShuttingDown) {
+			log.Printf("worker %d: submit child job %s: %v", workerID, j.ID, err)
+			return
+		}
+	}
+
+	if err := p.queue.Persist(ctx, j); err != nil {
+		log.Printf("worker %d: persist child job %s during shutdown: %v", workerID, j.ID, err)
 	}
 }
 

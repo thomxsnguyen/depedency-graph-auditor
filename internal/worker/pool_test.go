@@ -514,3 +514,246 @@ func TestPoolDurableExhaustionUsesStore(t *testing.T) {
 	q.Close()
 	p.Wait()
 }
+
+func TestPoolSubmitRejectedAfterShutdown(t *testing.T) {
+	q := queue.New(1)
+	p := worker.New(1, q, noopHandler{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if err := p.Submit(makeJob("late-job")); !errors.Is(err, worker.ErrShuttingDown) {
+		t.Fatalf("Submit after shutdown: got %v, want ErrShuttingDown", err)
+	}
+}
+
+func TestPoolShutdownStopsIdleWorkers(t *testing.T) {
+	q := queue.New(1)
+	p := worker.New(2, q, noopHandler{})
+	p.Start(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown idle pool: %v", err)
+	}
+}
+
+func TestPoolShutdownIsConcurrentAndIdempotent(t *testing.T) {
+	q := queue.New(1)
+	p := worker.New(2, q, noopHandler{})
+	p.Start(context.Background())
+
+	const callers = 8
+	results := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			results <- p.Shutdown(ctx)
+		}()
+	}
+
+	for i := 0; i < callers; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("Shutdown caller %d: %v", i, err)
+		}
+	}
+}
+
+func TestPoolShutdownDrainsActiveJob(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h := handlerFunc(func(context.Context, job.Job) ([]job.Job, error) {
+		close(started)
+		<-release
+		return nil, nil
+	})
+
+	q := queue.New(1)
+	p := worker.New(1, q, h)
+	if err := p.Submit(makeJob("active-job")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p.Start(context.Background())
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		result <- p.Shutdown(ctx)
+	}()
+
+	select {
+	case err := <-result:
+		t.Fatalf("Shutdown returned before active job finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("Shutdown after drain: %v", err)
+	}
+}
+
+func TestPoolShutdownReturnsWhenContextExpires(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h := handlerFunc(func(context.Context, job.Job) ([]job.Job, error) {
+		close(started)
+		<-release
+		return nil, nil
+	})
+
+	q := queue.New(1)
+	p := worker.New(1, q, h)
+	if err := p.Submit(makeJob("stuck-job")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := p.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown: got %v, want context deadline exceeded", err)
+	}
+
+	close(release)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+	defer cleanupCancel()
+	if err := p.Shutdown(cleanupCtx); err != nil {
+		t.Fatalf("Shutdown after releasing handler: %v", err)
+	}
+}
+
+func TestPoolShutdownPersistsChildWithoutDispatch(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	child := makeJob("child-job")
+	var calls atomic.Int64
+	h := handlerFunc(func(context.Context, job.Job) ([]job.Job, error) {
+		calls.Add(1)
+		close(started)
+		<-release
+		return []job.Job{child}, nil
+	})
+
+	s := newDurableStore()
+	q := queue.New(2, s)
+	p := worker.NewWithOptions(1, q, h,
+		worker.WithStore(s),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	root := makeJob("root-job")
+	if err := p.Submit(root); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Shutdown(canceledCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("initial Shutdown: got %v, want context canceled", err)
+	}
+	close(release)
+
+	ctx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown after handler finished: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls: got %d, want 1", got)
+	}
+	s.mu.Lock()
+	persistedChild, found := s.jobs[child.ID]
+	completed := append([]string(nil), s.completed...)
+	s.mu.Unlock()
+	if !found {
+		t.Fatal("child job was not persisted")
+	}
+	if persistedChild.Status != job.StatusPending {
+		t.Fatalf("child status: got %q, want %q", persistedChild.Status, job.StatusPending)
+	}
+	if len(completed) != 1 || completed[0] != root.ID {
+		t.Fatalf("completed jobs: got %v, want only root job", completed)
+	}
+}
+
+func TestPoolShutdownLeavesDurableRetryPending(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	h := handlerFunc(func(context.Context, job.Job) ([]job.Job, error) {
+		calls.Add(1)
+		close(started)
+		<-release
+		return nil, errors.New("transient error")
+	})
+
+	s := newDurableStore()
+	q := queue.New(1, s)
+	p := worker.NewWithOptions(1, q, h,
+		worker.WithStore(s),
+		worker.WithBackoff(func(int) time.Duration { return time.Hour }),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	j := makeJob("retry-job")
+	j.MaxAttempts = 3
+	if err := p.Submit(j); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p.Start(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Shutdown(canceledCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("initial Shutdown: got %v, want context canceled", err)
+	}
+	close(release)
+
+	ctx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown after retry persistence: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls: got %d, want 1", got)
+	}
+	s.mu.Lock()
+	persistedRetry := s.jobs[j.ID]
+	retryCalls := len(s.retries)
+	s.mu.Unlock()
+	if retryCalls != 1 {
+		t.Fatalf("RetryJob calls: got %d, want 1", retryCalls)
+	}
+	if persistedRetry.Status != job.StatusPending || persistedRetry.Attempts != 1 {
+		t.Fatalf("persisted retry state: got %+v", persistedRetry)
+	}
+}
