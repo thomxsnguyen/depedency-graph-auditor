@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
@@ -41,7 +42,17 @@ func (m *mockRegistry) FetchPackage(_ context.Context, name, version string) (*a
 // newAuditJob builds a minimal "audit_package" job for the given name@version.
 func newAuditJob(t *testing.T, name, version string) job.Job {
 	t.Helper()
-	payload, err := json.Marshal(auditor.AuditPayload{Name: name, Version: version})
+	return newAuditJobWithParent(t, name, version, "", "")
+}
+
+func newAuditJobWithParent(t *testing.T, name, version, parentName, parentVersion string) job.Job {
+	t.Helper()
+	payload, err := json.Marshal(auditor.AuditPayload{
+		Name:          name,
+		Version:       version,
+		ParentName:    parentName,
+		ParentVersion: parentVersion,
+	})
 	if err != nil {
 		t.Fatalf("newAuditJob marshal: %v", err)
 	}
@@ -57,8 +68,9 @@ func newAuditJob(t *testing.T, name, version string) job.Job {
 // Tests
 // ---------------------------------------------------------------------------
 
-// TestHandleHappyPath verifies that a package with two unseen dependencies
-// produces two child jobs, one stored package node, and two stored edges.
+// TestHandleHappyPath verifies that a package with two dependencies produces
+// two parent-aware child jobs and one stored package node. Edges are recorded
+// later, after each child resolves.
 func TestHandleHappyPath(t *testing.T) {
 	reg := &mockRegistry{
 		Packages: map[string]*auditor.PackageMetadata{
@@ -89,8 +101,59 @@ func TestHandleHappyPath(t *testing.T) {
 	if len(pkgs.All()) != 1 {
 		t.Fatalf("Handle: expected 1 package in store, got %d", len(pkgs.All()))
 	}
-	if len(edges.All()) != 2 {
-		t.Fatalf("Handle: expected 2 edges in store, got %d", len(edges.All()))
+	if len(edges.All()) != 0 {
+		t.Fatalf("Handle: expected no unresolved edges in store, got %d", len(edges.All()))
+	}
+	for _, child := range newJobs {
+		var payload auditor.AuditPayload
+		if err := json.Unmarshal(child.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ParentName != "express" || payload.ParentVersion != "4.18.2" {
+			t.Errorf("child parent: got %s@%s, want express@4.18.2", payload.ParentName, payload.ParentVersion)
+		}
+	}
+}
+
+func TestHandleRecordsResolvedIncomingEdgeAndRootMapping(t *testing.T) {
+	reg := &mockRegistry{Packages: map[string]*auditor.PackageMetadata{
+		"react@^19.1.0": {
+			Name: "react", Version: "19.2.8", License: "MIT", Dependencies: map[string]string{},
+		},
+	}}
+	packages := auditor.NewPackageStore()
+	edges := auditor.NewEdgeStore()
+	h := auditor.NewAuditHandler(reg, auditor.LicensePolicy{}, packages, edges)
+
+	_, err := h.Handle(context.Background(), newAuditJobWithParent(
+		t, "react", "^19.1.0", "personal-portfolio", "",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := auditor.DependencyEdge{
+		FromName: "personal-portfolio", ToName: "react", ToVersion: "19.2.8",
+	}
+	got := edges.All()
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("edges: got %+v, want [%+v]", got, want)
+	}
+
+	report := auditor.GenerateReport(packages, edges, "personal-portfolio")
+	markdown, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "personal-portfolio", Packages: packages.All(), Edges: got, Report: report,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(markdown, "react@^19.1.0") {
+		t.Fatalf("Markdown contains unresolved range node:\n%s", markdown)
+	}
+	for _, coordinate := range []string{"personal-portfolio", "react@19.2.8"} {
+		if !strings.Contains(markdown, coordinate) {
+			t.Errorf("Markdown missing node %q:\n%s", coordinate, markdown)
+		}
 	}
 }
 
@@ -157,10 +220,10 @@ func TestHandleDeduplicatesAlreadySeenPackage(t *testing.T) {
 	}
 }
 
-// TestHandleSkipsChildJobForSeenDependency verifies that when a direct
-// dependency is already in the package store, no child job is created for it —
-// but its edge is still recorded.
-func TestHandleSkipsChildJobForSeenDependency(t *testing.T) {
+// TestHandleEnqueuesRelationshipsBeforeExactResolution verifies that requested
+// ranges are not compared with exact package-store coordinates. Each declared
+// relationship must resolve so its incoming exact edge can be recorded.
+func TestHandleEnqueuesRelationshipsBeforeExactResolution(t *testing.T) {
 	reg := &mockRegistry{
 		Packages: map[string]*auditor.PackageMetadata{
 			"a@1.0.0": {
@@ -185,13 +248,65 @@ func TestHandleSkipsChildJobForSeenDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle: unexpected error: %v", err)
 	}
-	// Only one new job — for c@3.0.0; b@2.0.0 is skipped.
-	if len(newJobs) != 1 {
-		t.Fatalf("Handle: expected 1 child job, got %d", len(newJobs))
+	if len(newJobs) != 2 {
+		t.Fatalf("Handle: expected 2 child jobs, got %d", len(newJobs))
 	}
-	// Both edges must still be recorded.
-	if len(edges.All()) != 2 {
-		t.Errorf("Handle: expected 2 edges, got %d", len(edges.All()))
+	if len(edges.All()) != 0 {
+		t.Errorf("Handle: expected no pre-resolution edges, got %d", len(edges.All()))
+	}
+}
+
+func TestHandlePreservesIncomingEdgesForDeduplicatedPackage(t *testing.T) {
+	reg := &mockRegistry{Packages: map[string]*auditor.PackageMetadata{
+		"shared@^3.0.0": {
+			Name: "shared", Version: "3.1.0", License: "MIT", Dependencies: map[string]string{},
+		},
+	}}
+	packages := auditor.NewPackageStore()
+	edges := auditor.NewEdgeStore()
+	h := auditor.NewAuditHandler(reg, auditor.LicensePolicy{}, packages, edges)
+
+	firstJobs, err := h.Handle(context.Background(), newAuditJobWithParent(t, "shared", "^3.0.0", "left", "1.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJobs, err := h.Handle(context.Background(), newAuditJobWithParent(t, "shared", "^3.0.0", "right", "2.0.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstJobs) != 0 || secondJobs != nil {
+		t.Fatalf("unexpected child expansion: first=%v second=%v", firstJobs, secondJobs)
+	}
+
+	got := edges.All()
+	want := map[auditor.DependencyEdge]bool{
+		{FromName: "left", FromVersion: "1.0.0", ToName: "shared", ToVersion: "3.1.0"}:  true,
+		{FromName: "right", FromVersion: "2.0.0", ToName: "shared", ToVersion: "3.1.0"}: true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("edges: got %+v, want two diamond edges", got)
+	}
+	for _, edge := range got {
+		if !want[edge] {
+			t.Errorf("unexpected edge: %+v", edge)
+		}
+	}
+}
+
+func TestHandleLegacyPayloadWithoutParentRemainsValid(t *testing.T) {
+	reg := &mockRegistry{Packages: map[string]*auditor.PackageMetadata{
+		"legacy@1.0.0": {
+			Name: "legacy", Version: "1.0.0", License: "MIT", Dependencies: map[string]string{},
+		},
+	}}
+	edges := auditor.NewEdgeStore()
+	h := auditor.NewAuditHandler(reg, auditor.LicensePolicy{}, auditor.NewPackageStore(), edges)
+
+	if _, err := h.Handle(context.Background(), newAuditJob(t, "legacy", "1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	if len(edges.All()) != 0 {
+		t.Fatalf("legacy payload unexpectedly created an incoming edge: %+v", edges.All())
 	}
 }
 

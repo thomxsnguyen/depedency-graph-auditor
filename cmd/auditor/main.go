@@ -110,11 +110,11 @@ func main() {
 	)
 
 	for _, d := range deps {
-		payload, err := json.Marshal(auditor.AuditPayload{Name: d.Name, Version: d.VersionRange})
+		seedJob, err := newSeedJob(rootName, d)
 		if err != nil {
 			log.Fatalf("marshal seed job for %s: %v", d.Name, err)
 		}
-		pool.Submit(job.NewJob("audit_package", payload))
+		pool.Submit(seedJob)
 	}
 
 	// 6 & 7. Start the worker pool.
@@ -142,6 +142,18 @@ func main() {
 
 	// 9 & 10. Print the report generated after successful shutdown.
 	fmt.Print(report.Summary)
+}
+
+func newSeedJob(rootName string, dependency depfile.Dependency) (job.Job, error) {
+	payload, err := json.Marshal(auditor.AuditPayload{
+		Name:       dependency.Name,
+		Version:    dependency.VersionRange,
+		ParentName: rootName,
+	})
+	if err != nil {
+		return job.Job{}, err
+	}
+	return job.NewJob("audit_package", payload), nil
 }
 
 func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore) (*auditor.Report, error) {

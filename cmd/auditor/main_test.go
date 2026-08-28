@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,7 +12,28 @@ import (
 	"time"
 
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 )
+
+func TestNewSeedJobCarriesRootParent(t *testing.T) {
+	seed, err := newSeedJob("personal-portfolio", depfile.Dependency{
+		Name: "react", VersionRange: "^19.1.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload auditor.AuditPayload
+	if err := json.Unmarshal(seed.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	want := auditor.AuditPayload{
+		Name: "react", Version: "^19.1.0", ParentName: "personal-portfolio",
+	}
+	if payload != want {
+		t.Fatalf("payload: got %+v, want %+v", payload, want)
+	}
+}
 
 func TestParseCLIArgs(t *testing.T) {
 	tests := []struct {

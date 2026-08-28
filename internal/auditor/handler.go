@@ -10,8 +10,10 @@ import (
 
 // AuditPayload is the JSON body carried by every "audit_package" job.
 type AuditPayload struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	ParentName    string `json:"parent_name,omitempty"`
+	ParentVersion string `json:"parent_version,omitempty"`
 }
 
 // AuditHandler implements job.Handler. Each call resolves and audits one (name, version)
@@ -64,6 +66,18 @@ func (h *AuditHandler) Handle(ctx context.Context, j job.Job) ([]job.Job, error)
 	// Step 3 — audit against policy.
 	verdict := h.policy.Check(*meta)
 
+	// Record the incoming relationship only after the requested child range has
+	// resolved to an exact package coordinate. This happens before package
+	// deduplication so shared dependencies retain every distinct parent edge.
+	if p.ParentName != "" {
+		h.edgeStore.Add(DependencyEdge{
+			FromName:    p.ParentName,
+			FromVersion: p.ParentVersion,
+			ToName:      meta.Name,
+			ToVersion:   meta.Version,
+		})
+	}
+
 	// Step 4 — save the node.
 	// Add returns false if the package was already present. In that case another
 	// worker has already (or is about to) write the edges for this node, so we
@@ -79,33 +93,26 @@ func (h *AuditHandler) Handle(ctx context.Context, j job.Job) ([]job.Job, error)
 		return nil, nil // already seen — nothing more to do
 	}
 
-	// Step 5 — save edges and enqueue children.
+	// Step 5 — enqueue children with this exact package as their parent. Incoming
+	// edges are recorded when each child resolves, not from raw version ranges.
 	var newJobs []job.Job
 	for depName, depVersion := range meta.Dependencies {
-		// Record the dependency edge regardless of whether the child is new.
-		h.edgeStore.Add(DependencyEdge{
-			FromName:    meta.Name,
-			FromVersion: meta.Version,
-			ToName:      depName,
-			ToVersion:   depVersion,
+		payload, err := json.Marshal(AuditPayload{
+			Name:          depName,
+			Version:       depVersion,
+			ParentName:    meta.Name,
+			ParentVersion: meta.Version,
 		})
-
-		// Enqueue a new audit job only if this dependency has not been seen yet.
-		// The check-then-enqueue window is an acceptable at-least-once race in
-		// Phase 1: a duplicate job produces a no-op at step 4 above.
-		if !h.packageStore.Exists(depName, depVersion) {
-			payload, err := json.Marshal(AuditPayload{Name: depName, Version: depVersion})
-			if err != nil {
-				// Marshalling a plain struct cannot fail in practice, but be explicit.
-				return nil, fmt.Errorf("auditor: marshal child payload for %s@%s: %w", depName, depVersion, err)
-			}
-			newJobs = append(newJobs, job.Job{
-				ID:      job.NewJobID(),
-				Type:    "audit_package",
-				Payload: payload,
-				Status:  job.StatusPending,
-			})
+		if err != nil {
+			// Marshalling a plain struct cannot fail in practice, but be explicit.
+			return nil, fmt.Errorf("auditor: marshal child payload for %s@%s: %w", depName, depVersion, err)
 		}
+		newJobs = append(newJobs, job.Job{
+			ID:      job.NewJobID(),
+			Type:    "audit_package",
+			Payload: payload,
+			Status:  job.StatusPending,
+		})
 	}
 
 	return newJobs, nil
