@@ -28,12 +28,80 @@ func TestGenerateMarkdownReportEmptyGraph(t *testing.T) {
 		"- Root: `empty-app`",
 		"- Packages scanned: 0",
 		"- Policy violations: 0",
-		"```mermaid\ngraph TD\n```",
+		"## Dependency Overview",
+		"```mermaid\nflowchart TB",
+		"## Violation Paths\n\nNo policy violation paths.",
+		"## Complete Dependency Graph",
+		"<summary>Show all 0 packages and 0 edges</summary>",
 		"## Packages",
 		"## Policy Violations",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestGenerateMarkdownReportUsesProgressiveGraphSections(t *testing.T) {
+	packages := []auditor.Package{
+		{Name: "direct", Version: "1.0.0", Verdict: auditor.VerdictPass},
+		{Name: "leaf", Version: "2.0.0", License: "GPL-3.0", Verdict: auditor.VerdictPolicyViolation},
+	}
+	edges := []auditor.DependencyEdge{
+		{FromName: "app", ToName: "direct", ToVersion: "1.0.0"},
+		{FromName: "direct", FromVersion: "1.0.0", ToName: "leaf", ToVersion: "2.0.0"},
+	}
+	violations := []auditor.PackageViolation{{
+		Package: packages[1], Path: []string{"app", "direct@1.0.0", "leaf@2.0.0"},
+	}}
+
+	got, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "app", Packages: packages, Edges: edges,
+		Report: &auditor.Report{TotalPackages: 2, PolicyViolations: violations},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	overview := markdownSection(t, got, "## Dependency Overview", "## Violation Paths")
+	for _, want := range []string{"app", "direct@1.0.0", "n0 --> n1"} {
+		if !strings.Contains(overview, want) {
+			t.Errorf("overview missing %q:\n%s", want, overview)
+		}
+	}
+	if strings.Contains(overview, "leaf@2.0.0") {
+		t.Fatalf("overview contains transitive package:\n%s", overview)
+	}
+
+	paths := markdownSection(t, got, "## Violation Paths", "## Complete Dependency Graph")
+	for _, want := range []string{
+		"### `leaf@2.0.0`",
+		"flowchart LR",
+		"p0[\"app\"]",
+		"p1[\"direct@1.0.0\"]",
+		"p2[\"leaf@2.0.0\"]",
+		"p0 --> p1",
+		"p1 --> p2",
+	} {
+		if !strings.Contains(paths, want) {
+			t.Errorf("violation paths missing %q:\n%s", want, paths)
+		}
+	}
+
+	complete := markdownSection(t, got, "## Complete Dependency Graph", "## Packages")
+	for _, want := range []string{
+		"<details>",
+		"<summary>Show all 2 packages and 2 edges</summary>",
+		"layout: elk",
+		"useMaxWidth: false",
+		"nodeSpacing: 35",
+		"rankSpacing: 60",
+		"flowchart TB",
+		"leaf@2.0.0",
+		"</details>",
+	} {
+		if !strings.Contains(complete, want) {
+			t.Errorf("complete graph missing %q:\n%s", want, complete)
 		}
 	}
 }
@@ -277,4 +345,17 @@ func TestGenerateMarkdownReportIsDeterministicAndDoesNotMutateInput(t *testing.T
 	if packages[0] != beta || len(edges) != 2 {
 		t.Fatal("renderer mutated caller-owned input slices")
 	}
+}
+
+func markdownSection(t *testing.T, report, start, end string) string {
+	t.Helper()
+	startIndex := strings.Index(report, start)
+	if startIndex == -1 {
+		t.Fatalf("report missing section %q", start)
+	}
+	endIndex := strings.Index(report[startIndex+len(start):], end)
+	if endIndex == -1 {
+		t.Fatalf("report missing section %q after %q", end, start)
+	}
+	return report[startIndex : startIndex+len(start)+endIndex]
 }

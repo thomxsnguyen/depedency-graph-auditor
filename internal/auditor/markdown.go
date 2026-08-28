@@ -22,8 +22,8 @@ type markdownGraphNode struct {
 }
 
 // GenerateMarkdownReport renders a deterministic Markdown report containing
-// the audit summary, complete stored dependency graph, package inventory, and
-// policy violations.
+// the audit summary, readable graph views, package inventory, and policy
+// violations.
 func GenerateMarkdownReport(input MarkdownReportInput) (string, error) {
 	if input.Report == nil {
 		return "", errors.New("markdown report: report is required")
@@ -52,8 +52,6 @@ func GenerateMarkdownReport(input MarkdownReportInput) (string, error) {
 		return strings.Join(violations[i].Path, "\x00") < strings.Join(violations[j].Path, "\x00")
 	})
 
-	nodes, nodeIDs := markdownGraphNodes(packages, edges)
-
 	var out strings.Builder
 	out.WriteString("# Dependency Audit Report\n\n")
 	out.WriteString("## Summary\n\n")
@@ -61,22 +59,32 @@ func GenerateMarkdownReport(input MarkdownReportInput) (string, error) {
 	fmt.Fprintf(&out, "- Packages scanned: %d\n", input.Report.TotalPackages)
 	fmt.Fprintf(&out, "- Policy violations: %d\n\n", len(violations))
 
-	out.WriteString("## Dependency Graph\n\n")
-	out.WriteString("```mermaid\n")
-	out.WriteString("graph TD\n")
-	for _, node := range nodes {
-		fmt.Fprintf(&out, "    %s[\"%s\"]\n",
-			nodeIDs[markdownGraphNodeKey(node.name, node.version)],
-			escapeMermaidLabel(packageCoordinate(node.name, node.version)),
-		)
+	out.WriteString("## Dependency Overview\n\n")
+	overviewPackages := []Package(nil)
+	if input.Root != "" {
+		overviewPackages = append(overviewPackages, Package{Name: input.Root})
 	}
-	for _, edge := range edges {
-		fmt.Fprintf(&out, "    %s --> %s\n",
-			nodeIDs[markdownGraphNodeKey(edge.FromName, edge.FromVersion)],
-			nodeIDs[markdownGraphNodeKey(edge.ToName, edge.ToVersion)],
-		)
+	overviewEdges := directDependencyEdges(input.Root, edges)
+	writeMermaidGraph(&out, overviewPackages, overviewEdges, false)
+
+	out.WriteString("## Violation Paths\n\n")
+	if len(violations) == 0 {
+		out.WriteString("No policy violation paths.\n\n")
 	}
-	out.WriteString("```\n\n")
+	for _, violation := range violations {
+		coordinate := packageCoordinate(violation.Package.Name, violation.Package.Version)
+		fmt.Fprintf(&out, "### %s\n\n", markdownInlineCode(coordinate))
+		path := violation.Path
+		if len(path) == 0 {
+			path = []string{coordinate}
+		}
+		writeMermaidPath(&out, path)
+	}
+
+	out.WriteString("## Complete Dependency Graph\n\n")
+	fmt.Fprintf(&out, "<details>\n<summary>Show all %d packages and %d edges</summary>\n\n", len(packages), len(edges))
+	writeMermaidGraph(&out, packages, edges, true)
+	out.WriteString("</details>\n\n")
 
 	out.WriteString("## Packages\n\n")
 	out.WriteString("| Package | Version | License | Verdict |\n")
@@ -115,6 +123,57 @@ func GenerateMarkdownReport(input MarkdownReportInput) (string, error) {
 	}
 
 	return out.String(), nil
+}
+
+func directDependencyEdges(root string, edges []DependencyEdge) []DependencyEdge {
+	direct := make([]DependencyEdge, 0)
+	for _, edge := range edges {
+		if edge.FromName == root && edge.FromVersion == "" {
+			direct = append(direct, edge)
+		}
+	}
+	return direct
+}
+
+func writeMermaidGraph(out *strings.Builder, packages []Package, edges []DependencyEdge, useELK bool) {
+	nodes, nodeIDs := markdownGraphNodes(packages, edges)
+	out.WriteString("```mermaid\n")
+	if useELK {
+		out.WriteString("---\n")
+		out.WriteString("config:\n")
+		out.WriteString("  layout: elk\n")
+		out.WriteString("  flowchart:\n")
+		out.WriteString("    useMaxWidth: false\n")
+		out.WriteString("    nodeSpacing: 35\n")
+		out.WriteString("    rankSpacing: 60\n")
+		out.WriteString("---\n")
+	}
+	out.WriteString("flowchart TB\n")
+	for _, node := range nodes {
+		fmt.Fprintf(out, "    %s[\"%s\"]\n",
+			nodeIDs[markdownGraphNodeKey(node.name, node.version)],
+			escapeMermaidLabel(packageCoordinate(node.name, node.version)),
+		)
+	}
+	for _, edge := range edges {
+		fmt.Fprintf(out, "    %s --> %s\n",
+			nodeIDs[markdownGraphNodeKey(edge.FromName, edge.FromVersion)],
+			nodeIDs[markdownGraphNodeKey(edge.ToName, edge.ToVersion)],
+		)
+	}
+	out.WriteString("```\n\n")
+}
+
+func writeMermaidPath(out *strings.Builder, path []string) {
+	out.WriteString("```mermaid\n")
+	out.WriteString("flowchart LR\n")
+	for i, coordinate := range path {
+		fmt.Fprintf(out, "    p%d[\"%s\"]\n", i, escapeMermaidLabel(coordinate))
+	}
+	for i := 1; i < len(path); i++ {
+		fmt.Fprintf(out, "    p%d --> p%d\n", i-1, i)
+	}
+	out.WriteString("```\n\n")
 }
 
 func markdownGraphNodes(packages []Package, edges []DependencyEdge) ([]markdownGraphNode, map[string]string) {

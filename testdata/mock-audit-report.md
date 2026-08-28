@@ -6,10 +6,120 @@
 - Packages scanned: 185
 - Policy violations: 4
 
-## Dependency Graph
+## Dependency Overview
 
 ```mermaid
-graph TD
+flowchart TB
+    n0["@eslint/js@9.39.5"]
+    n1["@tailwindcss/vite@4.3.3"]
+    n2["@types/react@19.2.18"]
+    n3["@types/react-dom@19.2.5"]
+    n4["@vitejs/plugin-react@4.7.0"]
+    n5["eslint@9.39.5"]
+    n6["eslint-plugin-react-hooks@5.2.0"]
+    n7["eslint-plugin-react-refresh@0.4.26"]
+    n8["globals@16.5.0"]
+    n9["personal-portfolio"]
+    n10["react@19.2.8"]
+    n11["react-dom@19.2.8"]
+    n12["react-router-dom@7.18.3"]
+    n13["tailwindcss@4.3.3"]
+    n14["typescript@5.8.3"]
+    n15["typescript-eslint@8.68.0"]
+    n16["vite@6.4.3"]
+    n9 --> n0
+    n9 --> n1
+    n9 --> n2
+    n9 --> n3
+    n9 --> n4
+    n9 --> n5
+    n9 --> n6
+    n9 --> n7
+    n9 --> n8
+    n9 --> n10
+    n9 --> n11
+    n9 --> n12
+    n9 --> n13
+    n9 --> n14
+    n9 --> n15
+    n9 --> n16
+```
+
+## Violation Paths
+
+### `argparse@2.0.1`
+
+```mermaid
+flowchart LR
+    p0["personal-portfolio"]
+    p1["eslint@9.39.5"]
+    p2["@eslint/eslintrc@3.3.6"]
+    p3["js-yaml@4.3.2"]
+    p4["argparse@2.0.1"]
+    p0 --> p1
+    p1 --> p2
+    p2 --> p3
+    p3 --> p4
+```
+
+### `caniuse-lite@1.0.30001810`
+
+```mermaid
+flowchart LR
+    p0["personal-portfolio"]
+    p1["@vitejs/plugin-react@4.7.0"]
+    p2["@babel/core@7.29.7"]
+    p3["@babel/helper-compilation-targets@7.29.7"]
+    p4["browserslist@4.28.8"]
+    p5["caniuse-lite@1.0.30001810"]
+    p0 --> p1
+    p1 --> p2
+    p2 --> p3
+    p3 --> p4
+    p4 --> p5
+```
+
+### `lightningcss@1.32.0`
+
+```mermaid
+flowchart LR
+    p0["personal-portfolio"]
+    p1["@tailwindcss/vite@4.3.3"]
+    p2["@tailwindcss/node@4.3.3"]
+    p3["lightningcss@1.32.0"]
+    p0 --> p1
+    p1 --> p2
+    p2 --> p3
+```
+
+### `minimatch@10.2.6`
+
+```mermaid
+flowchart LR
+    p0["personal-portfolio"]
+    p1["typescript-eslint@8.68.0"]
+    p2["@typescript-eslint/typescript-estree@8.68.0"]
+    p3["minimatch@10.2.6"]
+    p0 --> p1
+    p1 --> p2
+    p2 --> p3
+```
+
+## Complete Dependency Graph
+
+<details>
+<summary>Show all 185 packages and 275 edges</summary>
+
+```mermaid
+---
+config:
+  layout: elk
+  flowchart:
+    useMaxWidth: false
+    nodeSpacing: 35
+    rankSpacing: 60
+---
+flowchart TB
     n0["@babel/code-frame@7.29.7"]
     n1["@babel/compat-data@7.29.7"]
     n2["@babel/core@7.29.7"]
@@ -472,6 +582,8 @@ graph TD
     n181 --> n174
     n182 --> n122
 ```
+
+</details>
 
 ## Packages
 

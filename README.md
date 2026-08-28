@@ -139,6 +139,8 @@ graph LR
 │   ├── queue/             # In-memory and persistent queue implementations
 │   ├── semver/            # Semantic version constraint matching
 │   └── worker/            # Bounded worker pool implementation
+├── testdata/
+│   └── mock-package.json  # Sample npm manifest for an end-to-end audit
 ├── go.mod
 └── go.sum
 ```
@@ -160,17 +162,102 @@ graph LR
 ## Getting Started
 
 ### Prerequisites
+
 - [Go 1.22+](https://go.dev/dl/)
+- Docker with Docker Compose
+- Network access to the public npm registry for end-to-end auditor runs
+
+### Start PostgreSQL
+
+```bash
+docker compose up -d postgres
+```
+
+The default database configuration is:
+
+```bash
+export DATABASE_URL='postgres://postgres:postgres@localhost:5432/jobqueue?sslmode=disable'
+```
 
 ### Running Tests
-To run all unit and integration test suites:
+
+Run the race-enabled unit suite:
+
 ```bash
-go test -v ./...
+go test -race ./...
+```
+
+Run the PostgreSQL integration suite while the Compose service is running:
+
+```bash
+go test -race -tags=integration ./...
 ```
 
 ### Building the Auditor
+
 ```bash
 go build -o bin/auditor ./cmd/auditor
+```
+
+### Generate a Markdown Dependency Report
+
+The auditor accepts one `package.json` path and an optional Markdown output
+path:
+
+```bash
+DATABASE_URL="$DATABASE_URL" go run ./cmd/auditor \
+  --output audit-report.md \
+  ./package.json
+```
+
+The report contains:
+
+1. A readable overview of the root and its direct dependencies.
+2. A compact graph for each policy-violation path.
+3. A collapsed complete graph containing every resolved package and edge.
+4. Package inventory and policy-violation tables.
+
+Package nodes use exact versions resolved from npm. Root, shared, transitive,
+diamond, and cyclic relationships are represented by directed Mermaid edges.
+
+### Run the Included Mock Package
+
+Use an isolated database so previous or interrupted audit jobs cannot affect the
+result:
+
+```bash
+docker exec job-queue-pg \
+  dropdb --if-exists -U postgres jobqueue_mock_run
+
+docker exec job-queue-pg \
+  createdb -U postgres jobqueue_mock_run
+
+docker exec job-queue-pg \
+  psql -U postgres \
+  -d jobqueue_mock_run \
+  -f /docker-entrypoint-initdb.d/001_jobs.sql
+
+DATABASE_URL='postgres://postgres:postgres@localhost:5432/jobqueue_mock_run?sslmode=disable' \
+go run ./cmd/auditor \
+  --output testdata/mock-audit-report.md \
+  testdata/mock-package.json
+```
+
+On macOS, open the generated report with:
+
+```bash
+open testdata/mock-audit-report.md
+```
+
+The Markdown viewer must support Mermaid diagrams. GitHub renders Mermaid code
+blocks automatically. In the rendered report, scroll to **Complete Dependency
+Graph** and select **Show all packages and edges** to expand the full graph.
+
+Remove the isolated database when finished:
+
+```bash
+docker exec job-queue-pg \
+  dropdb -U postgres jobqueue_mock_run
 ```
 
 ---
@@ -186,3 +273,5 @@ For comprehensive technical deep dives, consult the specifications in `docs/`:
 - [Graceful Shutdown Protocol](docs/graceful-shutdown.md)
 - [Data Models](docs/data-models.md)
 - [Dependency Auditor Reference Workload](docs/dependency-auditor.md)
+- [Dependency Graph Markdown Report](docs/implementation/features/dependency-graph-report.md)
+- [Resolved Dependency Graph Mapping](docs/implementation/features/mapping.md)
