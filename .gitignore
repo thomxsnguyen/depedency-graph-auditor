@@ -1,2 +1,5 @@
 # Environments / secrets
-.env    
+.env
+
+# Local auditor smoke-test fixture
+testdata/mock-package.json
