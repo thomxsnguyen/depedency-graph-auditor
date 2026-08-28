@@ -38,6 +38,76 @@ func TestGenerateMarkdownReportEmptyGraph(t *testing.T) {
 	}
 }
 
+func TestGenerateMarkdownReportSinglePackage(t *testing.T) {
+	got, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "app",
+		Packages: []auditor.Package{
+			{Name: "only", Version: "1.0.0", License: "MIT", Verdict: auditor.VerdictPass},
+		},
+		Report: &auditor.Report{TotalPackages: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count := strings.Count(got, "n0[\"only@1.0.0\"]"); count != 1 {
+		t.Fatalf("single node count: got %d, want 1\n%s", count, got)
+	}
+	if !strings.Contains(got, "| `only` | `1.0.0` | `MIT` | `pass` |") {
+		t.Fatalf("single package row missing:\n%s", got)
+	}
+}
+
+func TestGenerateMarkdownReportRendersDirectAndTransitiveEdges(t *testing.T) {
+	got, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "app",
+		Packages: []auditor.Package{
+			{Name: "alpha", Version: "1"},
+			{Name: "beta", Version: "1"},
+			{Name: "gamma", Version: "1"},
+		},
+		Edges: []auditor.DependencyEdge{
+			{FromName: "alpha", FromVersion: "1", ToName: "beta", ToVersion: "1"},
+			{FromName: "beta", FromVersion: "1", ToName: "gamma", ToVersion: "1"},
+		},
+		Report: &auditor.Report{TotalPackages: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, edge := range []string{"n0 --> n1", "n1 --> n2"} {
+		if !strings.Contains(got, edge) {
+			t.Errorf("report missing edge %q:\n%s", edge, got)
+		}
+	}
+}
+
+func TestGenerateMarkdownReportRendersDependencyDiamond(t *testing.T) {
+	got, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "app",
+		Edges: []auditor.DependencyEdge{
+			{FromName: "root", FromVersion: "1", ToName: "left", ToVersion: "1"},
+			{FromName: "root", FromVersion: "1", ToName: "right", ToVersion: "1"},
+			{FromName: "left", FromVersion: "1", ToName: "shared", ToVersion: "1"},
+			{FromName: "right", FromVersion: "1", ToName: "shared", ToVersion: "1"},
+		},
+		Report: &auditor.Report{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if count := strings.Count(got, "[\"shared@1\"]"); count != 1 {
+		t.Fatalf("shared node count: got %d, want 1\n%s", count, got)
+	}
+	for _, edge := range []string{"n2 --> n0", "n2 --> n1", "n0 --> n3", "n1 --> n3"} {
+		if !strings.Contains(got, edge) {
+			t.Errorf("diamond missing edge %q:\n%s", edge, got)
+		}
+	}
+}
+
 func TestGenerateMarkdownReportRendersCompleteGraphAndPackages(t *testing.T) {
 	packages := []auditor.Package{
 		{Name: "shared", Version: "3.0.0", License: "MIT", Verdict: auditor.VerdictPass},

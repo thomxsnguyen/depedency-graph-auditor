@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +74,108 @@ func TestWriteMarkdownReportIncludesOutputPathInError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), outputPath) {
 		t.Fatalf("error: got %v, want path %q", err, outputPath)
 	}
+}
+
+func TestFinalizeAuditDoesNotWriteAfterShutdownFailure(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "audit.md")
+	report, err := finalizeAudit(errors.New("shutdown timeout"), outputPath, "app", auditor.NewPackageStore(), auditor.NewEdgeStore())
+	if err == nil || report != nil {
+		t.Fatalf("finalizeAudit: report=%v error=%v, want nil report and shutdown error", report, err)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("output file exists after shutdown failure: %v", statErr)
+	}
+}
+
+func TestCLIOutputContract(t *testing.T) {
+	tempDir := t.TempDir()
+	packagePath := filepath.Join(tempDir, "package.json")
+	if err := os.WriteFile(packagePath, []byte(`{"name":"empty-app","dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no output option creates no file", func(t *testing.T) {
+		unusedOutput := filepath.Join(tempDir, "not-created.md")
+		result := runCLIProcess(t, packagePath)
+		if result.err != nil {
+			t.Fatalf("CLI error: %v\nstderr: %s", result.err, result.stderr)
+		}
+		if _, err := os.Stat(unusedOutput); !os.IsNotExist(err) {
+			t.Fatalf("unexpected output file: %v", err)
+		}
+		if !strings.Contains(result.stdout, "No dependencies found") {
+			t.Fatalf("existing terminal output missing: %q", result.stdout)
+		}
+	})
+
+	t.Run("output option writes markdown", func(t *testing.T) {
+		outputPath := filepath.Join(tempDir, "audit-report")
+		result := runCLIProcess(t, "--output", outputPath, packagePath)
+		if result.err != nil {
+			t.Fatalf("CLI error: %v\nstderr: %s", result.err, result.stderr)
+		}
+		contents, err := os.ReadFile(outputPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(contents), "# Dependency Audit Report") {
+			t.Fatalf("invalid Markdown report:\n%s", contents)
+		}
+	})
+
+	t.Run("missing output value exits non-zero", func(t *testing.T) {
+		result := runCLIProcess(t, "--output")
+		if result.err == nil || !strings.Contains(result.stderr, "flag needs an argument") {
+			t.Fatalf("error=%v stderr=%q, want non-zero missing-value error", result.err, result.stderr)
+		}
+	})
+
+	t.Run("unwritable output exits non-zero with path", func(t *testing.T) {
+		outputPath := filepath.Join(tempDir, "missing", "audit.md")
+		result := runCLIProcess(t, "--output", outputPath, packagePath)
+		if result.err == nil || !strings.Contains(result.stderr, outputPath) {
+			t.Fatalf("error=%v stderr=%q, want non-zero path-specific error", result.err, result.stderr)
+		}
+	})
+}
+
+type cliProcessResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+func runCLIProcess(t *testing.T, args ...string) cliProcessResult {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commandArgs := append([]string{"-test.run=^TestCLIHelperProcess$", "--"}, args...)
+	command := exec.Command(executable, commandArgs...)
+	command.Env = append(os.Environ(), "AUDITOR_CLI_HELPER=1")
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err = command.Run()
+	return cliProcessResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
+}
+
+func TestCLIHelperProcess(t *testing.T) {
+	if os.Getenv("AUDITOR_CLI_HELPER") != "1" {
+		return
+	}
+
+	separator := 0
+	for i, arg := range os.Args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	os.Args = append([]string{"auditor"}, os.Args[separator+1:]...)
+	main()
 }
 
 func TestShutdownTimeoutFromEnvUsesDefault(t *testing.T) {

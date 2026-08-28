@@ -130,19 +130,32 @@ func main() {
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
-	if err := pool.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown deadline %s exceeded: %v", shutdownTimeout, err)
+	shutdownErr := pool.Shutdown(shutdownCtx)
+	report, err := finalizeAudit(shutdownErr, config.outputPath, rootName, pkgStore, edgeStore)
+	if shutdownErr != nil {
+		log.Printf("shutdown deadline %s exceeded: %v", shutdownTimeout, shutdownErr)
 		os.Exit(1)
 	}
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// 9 & 10. Generate and print the report.
-	report := auditor.GenerateReport(pkgStore, edgeStore, rootName)
-	if config.outputPath != "" {
-		if err := writeMarkdownReport(config.outputPath, rootName, pkgStore, edgeStore, report); err != nil {
-			log.Fatal(err)
+	// 9 & 10. Print the report generated after successful shutdown.
+	fmt.Print(report.Summary)
+}
+
+func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore) (*auditor.Report, error) {
+	if shutdownErr != nil {
+		return nil, shutdownErr
+	}
+
+	report := auditor.GenerateReport(packages, edges, root)
+	if outputPath != "" {
+		if err := writeMarkdownReport(outputPath, root, packages, edges, report); err != nil {
+			return nil, err
 		}
 	}
-	fmt.Print(report.Summary)
+	return report, nil
 }
 
 func parseCLIArgs(args []string) (cliConfig, error) {
