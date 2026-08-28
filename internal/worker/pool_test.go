@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -282,6 +283,44 @@ func TestPoolSelfFeedingExpansion(t *testing.T) {
 
 	q.Close()
 	p.Wait()
+}
+
+func TestDurablePoolFanoutLargerThanDispatchBufferDoesNotDeadlock(t *testing.T) {
+	const childCount = 25
+	var calls atomic.Int64
+	h := handlerFunc(func(_ context.Context, j job.Job) ([]job.Job, error) {
+		calls.Add(1)
+		if j.ID != "root-job" {
+			return nil, nil
+		}
+		children := make([]job.Job, 0, childCount)
+		for i := 0; i < childCount; i++ {
+			children = append(children, makeJob(fmt.Sprintf("child-%d", i)))
+		}
+		return children, nil
+	})
+
+	s := newDurableStore()
+	q := queue.New(1, s)
+	p := worker.NewWithOptions(1, q, h,
+		worker.WithStore(s),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	if err := p.Submit(makeJob("root-job")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p.Start(context.Background())
+
+	waitDone(t, p, 3*time.Second)
+	if got := calls.Load(); got != childCount+1 {
+		t.Fatalf("handler calls: got %d, want %d", got, childCount+1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
 }
 
 // TestPoolWorkerCountBounded verifies that the pool operates with at most

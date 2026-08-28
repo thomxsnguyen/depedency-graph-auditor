@@ -308,7 +308,13 @@ func (p *Pool) dispatchReady(ctx context.Context) {
 // later process can resume the graph without extending this process's drain.
 func (p *Pool) submitChild(ctx context.Context, workerID int, j job.Job) {
 	if p.accepting.Load() {
-		if err := p.Submit(j); err == nil {
+		var err error
+		if p.store != nil {
+			err = p.persistChildForDispatch(ctx, j)
+		} else {
+			err = p.Submit(j)
+		}
+		if err == nil {
 			return
 		} else if !errors.Is(err, ErrShuttingDown) {
 			log.Printf("worker %d: submit child job %s: %v", workerID, j.ID, err)
@@ -319,6 +325,29 @@ func (p *Pool) submitChild(ctx context.Context, workerID int, j job.Job) {
 	if err := p.queue.Persist(ctx, j); err != nil {
 		log.Printf("worker %d: persist child job %s during shutdown: %v", workerID, j.ID, err)
 	}
+}
+
+// persistChildForDispatch records durable child work without making the worker
+// block on the bounded dispatch queue. The poller is the sole dispatcher for
+// these jobs, while inFlight keeps Done open until they have been processed.
+func (p *Pool) persistChildForDispatch(ctx context.Context, j job.Job) error {
+	p.lifecycleMu.Lock()
+	if p.stopping {
+		p.lifecycleMu.Unlock()
+		return ErrShuttingDown
+	}
+	p.submitWG.Add(1)
+	p.lifecycleMu.Unlock()
+	defer p.submitWG.Done()
+
+	p.counted.Store(j.ID, struct{}{})
+	p.inFlight.Add(1)
+	if err := p.queue.Persist(ctx, j); err != nil {
+		p.counted.Delete(j.ID)
+		p.inFlight.Add(-1)
+		return err
+	}
+	return nil
 }
 
 // checkDone closes the done channel if no jobs are in-flight.
