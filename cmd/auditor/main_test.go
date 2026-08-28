@@ -1,10 +1,77 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 )
+
+func TestParseCLIArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    cliConfig
+		wantErr string
+	}{
+		{name: "input only", args: []string{"package.json"}, want: cliConfig{packageJSONPath: "package.json"}},
+		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{packageJSONPath: "package.json", outputPath: "report.md"}},
+		{name: "missing input", wantErr: "missing package.json path"},
+		{name: "missing output value", args: []string{"--output"}, wantErr: "flag needs an argument"},
+		{name: "empty output value", args: []string{"--output=", "package.json"}, wantErr: "non-empty path"},
+		{name: "extra input", args: []string{"one.json", "two.json"}, wantErr: "unexpected extra positional argument"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCLIArgs(tt.args)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("config: got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteMarkdownReport(t *testing.T) {
+	packages := auditor.NewPackageStore()
+	packages.Add(auditor.Package{Name: "alpha", Version: "1.0.0", License: "MIT", Verdict: auditor.VerdictPass})
+	edges := auditor.NewEdgeStore()
+	report := auditor.GenerateReport(packages, edges, "app")
+	outputPath := filepath.Join(t.TempDir(), "audit.md")
+
+	if err := writeMarkdownReport(outputPath, "app", packages, edges, report); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Dependency Audit Report", "- Root: `app`", "| `alpha` | `1.0.0` | `MIT` | `pass` |"} {
+		if !strings.Contains(string(contents), want) {
+			t.Errorf("report missing %q:\n%s", want, contents)
+		}
+	}
+}
+
+func TestWriteMarkdownReportIncludesOutputPathInError(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "missing", "audit.md")
+	err := writeMarkdownReport(outputPath, "app", auditor.NewPackageStore(), auditor.NewEdgeStore(), &auditor.Report{})
+	if err == nil || !strings.Contains(err.Error(), outputPath) {
+		t.Fatalf("error: got %v, want path %q", err, outputPath)
+	}
+}
 
 func TestShutdownTimeoutFromEnvUsesDefault(t *testing.T) {
 	t.Setenv("SHUTDOWN_TIMEOUT", "")

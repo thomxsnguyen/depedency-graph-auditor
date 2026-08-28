@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -22,13 +25,20 @@ import (
 
 const defaultShutdownTimeout = 30 * time.Second
 
+type cliConfig struct {
+	packageJSONPath string
+	outputPath      string
+}
+
 func main() {
-	// 1. Read a package.json path from CLI args.
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: auditor <path/to/package.json>\n")
+	// 1. Read a package.json path and optional report path from CLI args.
+	config, err := parseCLIArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configuration: %v\n", err)
+		fmt.Fprintln(os.Stderr, "usage: auditor [--output <path>] <path/to/package.json>")
 		os.Exit(1)
 	}
-	pkgJSONPath := os.Args[1]
+	pkgJSONPath := config.packageJSONPath
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
 	if err != nil {
 		log.Fatalf("configuration: %v", err)
@@ -40,6 +50,14 @@ func main() {
 		log.Fatalf("depfile: %v", err)
 	}
 	if len(deps) == 0 {
+		if config.outputPath != "" {
+			packages := auditor.NewPackageStore()
+			edges := auditor.NewEdgeStore()
+			report := auditor.GenerateReport(packages, edges, rootNameFromFile(pkgJSONPath))
+			if err := writeMarkdownReport(config.outputPath, rootNameFromFile(pkgJSONPath), packages, edges, report); err != nil {
+				log.Fatal(err)
+			}
+		}
 		fmt.Println("No dependencies found in package.json — nothing to audit.")
 		return
 	}
@@ -119,7 +137,57 @@ func main() {
 
 	// 9 & 10. Generate and print the report.
 	report := auditor.GenerateReport(pkgStore, edgeStore, rootName)
+	if config.outputPath != "" {
+		if err := writeMarkdownReport(config.outputPath, rootName, pkgStore, edgeStore, report); err != nil {
+			log.Fatal(err)
+		}
+	}
 	fmt.Print(report.Summary)
+}
+
+func parseCLIArgs(args []string) (cliConfig, error) {
+	flags := flag.NewFlagSet("auditor", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	outputPath := flags.String("output", "", "write a Markdown report to this path")
+	if err := flags.Parse(args); err != nil {
+		return cliConfig{}, err
+	}
+
+	outputSet := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == "output" {
+			outputSet = true
+		}
+	})
+	if outputSet && *outputPath == "" {
+		return cliConfig{}, errors.New("--output requires a non-empty path")
+	}
+
+	positional := flags.Args()
+	if len(positional) == 0 {
+		return cliConfig{}, errors.New("missing package.json path")
+	}
+	if len(positional) > 1 {
+		return cliConfig{}, fmt.Errorf("unexpected extra positional argument %q", positional[1])
+	}
+
+	return cliConfig{packageJSONPath: positional[0], outputPath: *outputPath}, nil
+}
+
+func writeMarkdownReport(outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, report *auditor.Report) error {
+	markdown, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root:     root,
+		Packages: packages.All(),
+		Edges:    edges.All(),
+		Report:   report,
+	})
+	if err != nil {
+		return fmt.Errorf("generate Markdown report for %q: %w", outputPath, err)
+	}
+	if err := os.WriteFile(outputPath, []byte(markdown), 0o644); err != nil {
+		return fmt.Errorf("write Markdown report %q: %w", outputPath, err)
+	}
+	return nil
 }
 
 func shutdownTimeoutFromEnv() (time.Duration, error) {
