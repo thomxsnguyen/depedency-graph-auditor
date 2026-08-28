@@ -22,6 +22,26 @@ type durableStore struct {
 	deadLettered []string
 }
 
+type blockingPollStore struct {
+	*durableStore
+	block   atomic.Bool
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingPollStore) AcquireJob(ctx context.Context) (job.Job, bool, error) {
+	if s.block.Load() {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return job.Job{}, false, ctx.Err()
+		}
+	}
+	return s.durableStore.AcquireJob(ctx)
+}
+
 func newDurableStore() *durableStore {
 	return &durableStore{jobs: make(map[string]job.Job)}
 }
@@ -542,6 +562,45 @@ func TestPoolShutdownStopsIdleWorkers(t *testing.T) {
 	}
 }
 
+func TestPoolShutdownWaitsForPollerBeforeClosingQueue(t *testing.T) {
+	s := &blockingPollStore{
+		durableStore: newDurableStore(),
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	q := queue.New(1, s)
+	s.block.Store(true)
+	p := worker.NewWithOptions(0, q, noopHandler{},
+		worker.WithStore(s),
+		worker.WithPollInterval(time.Millisecond),
+	)
+	p.Start(context.Background())
+
+	select {
+	case <-s.started:
+	case <-time.After(time.Second):
+		t.Fatal("poller did not enter AcquireJob")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		result <- p.Shutdown(ctx)
+	}()
+
+	if err := q.DispatchAcquired(makeJob("ordering-probe")); err != nil {
+		t.Fatalf("queue closed before poller exited: %v", err)
+	}
+	close(s.release)
+	if err := <-result; err != nil {
+		t.Fatalf("Shutdown after poller exit: %v", err)
+	}
+	if err := q.DispatchAcquired(makeJob("late-probe")); !errors.Is(err, queue.ErrClosed) {
+		t.Fatalf("queue after shutdown: got %v, want ErrClosed", err)
+	}
+}
+
 func TestPoolShutdownIsConcurrentAndIdempotent(t *testing.T) {
 	q := queue.New(1)
 	p := worker.New(2, q, noopHandler{})
@@ -573,9 +632,11 @@ func TestPoolShutdownDrainsActiveJob(t *testing.T) {
 		return nil, nil
 	})
 
-	q := queue.New(1)
-	p := worker.New(1, q, h)
-	if err := p.Submit(makeJob("active-job")); err != nil {
+	s := newDurableStore()
+	q := queue.New(1, s)
+	p := worker.NewWithOptions(1, q, h, worker.WithStore(s))
+	j := makeJob("active-job")
+	if err := p.Submit(j); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	p.Start(context.Background())
@@ -602,6 +663,14 @@ func TestPoolShutdownDrainsActiveJob(t *testing.T) {
 	close(release)
 	if err := <-result; err != nil {
 		t.Fatalf("Shutdown after drain: %v", err)
+	}
+
+	s.mu.Lock()
+	completed := append([]string(nil), s.completed...)
+	persisted := s.jobs[j.ID]
+	s.mu.Unlock()
+	if len(completed) != 1 || completed[0] != j.ID || persisted.Status != job.StatusCompleted {
+		t.Fatalf("completed job state: calls=%v job=%+v", completed, persisted)
 	}
 }
 
