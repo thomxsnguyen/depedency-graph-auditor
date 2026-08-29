@@ -133,6 +133,101 @@ func TestReadManifestSourceLocalAndGitHub(t *testing.T) {
 	}
 }
 
+func TestGitHubManifestInvalidJSONFailsDuringPreflight(t *testing.T) {
+	server := newGitHubManifestServer(t, `not valid json{{`)
+	config, err := parseCLIArgs([]string{"https://github.com/acme/widget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := readManifestSource(context.Background(), config, &githubsource.GitHubClient{
+		HTTPClient: server.Client(), BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := depfile.ParsePackageJSON(bytes.NewReader(source.Data), true); err == nil {
+		t.Fatal("expected malformed downloaded manifest to fail during preflight parsing")
+	}
+}
+
+func TestGitHubManifestNameBecomesReportRoot(t *testing.T) {
+	server := newGitHubManifestServer(t, `{"name":"remote-app","dependencies":{}}`)
+	manifest := readTestGitHubManifest(t, server)
+
+	report := auditor.GenerateReport(auditor.NewPackageStore(), auditor.NewEdgeStore(), manifest.Name)
+	markdown, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: manifest.Name, Report: report,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(markdown, "- Root: `remote-app`") {
+		t.Fatalf("downloaded manifest name was not used as report root:\n%s", markdown)
+	}
+}
+
+func TestGitHubManifestReachesAuditSeedJob(t *testing.T) {
+	server := newGitHubManifestServer(t, `{"name":"remote-app","dependencies":{"react":"^19.1.0"}}`)
+	manifest := readTestGitHubManifest(t, server)
+	if len(manifest.Dependencies) != 1 {
+		t.Fatalf("dependencies: got %d, want 1", len(manifest.Dependencies))
+	}
+
+	seed, err := newSeedJob(manifest.Name, manifest.Dependencies[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload auditor.AuditPayload
+	if err := json.Unmarshal(seed.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	want := auditor.AuditPayload{Name: "react", Version: "^19.1.0", ParentName: "remote-app"}
+	if payload != want {
+		t.Fatalf("payload: got %+v, want %+v", payload, want)
+	}
+}
+
+func TestGitHubManifestWithNoDependenciesPreservesNoWorkBehavior(t *testing.T) {
+	server := newGitHubManifestServer(t, `{"name":"empty-remote-app","dependencies":{},"devDependencies":{}}`)
+	manifest := readTestGitHubManifest(t, server)
+
+	if len(manifest.Dependencies) != 0 {
+		t.Fatalf("dependencies: got %d, want 0", len(manifest.Dependencies))
+	}
+}
+
+func newGitHubManifestServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/package.json" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func readTestGitHubManifest(t *testing.T, server *httptest.Server) depfile.Manifest {
+	t.Helper()
+	config, err := parseCLIArgs([]string{"https://github.com/acme/widget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := readManifestSource(context.Background(), config, &githubsource.GitHubClient{
+		HTTPClient: server.Client(), BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := depfile.ParsePackageJSON(bytes.NewReader(source.Data), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest
+}
+
 func TestWriteMarkdownReport(t *testing.T) {
 	packages := auditor.NewPackageStore()
 	packages.Add(auditor.Package{Name: "alpha", Version: "1.0.0", License: "MIT", Verdict: auditor.VerdictPass})

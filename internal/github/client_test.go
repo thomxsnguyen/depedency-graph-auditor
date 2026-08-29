@@ -22,9 +22,12 @@ func TestParseRepositoryURL(t *testing.T) {
 		{input: "https://github.com/acme/widget/", want: githubsource.Repository{Owner: "acme", Name: "widget"}},
 		{input: "https://github.com/acme/widget.git", want: githubsource.Repository{Owner: "acme", Name: "widget"}},
 		{input: "http://github.com/acme/widget", wantErr: true},
+		{input: "ssh://github.com/acme/widget", wantErr: true},
+		{input: "file://github.com/acme/widget", wantErr: true},
 		{input: "https://example.com/acme/widget", wantErr: true},
 		{input: "https://github.com/acme", wantErr: true},
 		{input: "https://github.com/acme/widget/tree/main", wantErr: true},
+		{input: "https://github.com/acme/widget/blob/main/package.json", wantErr: true},
 		{input: "https://github.com//acme/widget", wantErr: true},
 		{input: "https://github.com/acme/widget//", wantErr: true},
 		{input: "https://user@github.com/acme/widget", wantErr: true},
@@ -124,8 +127,16 @@ func TestFetchManifestErrors(t *testing.T) {
 
 			client := githubsource.GitHubClient{HTTPClient: server.Client(), BaseURL: server.URL, Token: "never-print-this"}
 			_, err := client.FetchManifest(context.Background(), githubsource.Repository{Owner: "acme", Name: "widget"}, "package.json", "")
-			if err == nil || strings.Contains(err.Error(), client.Token) {
+			if err == nil {
+				t.Fatal("expected HTTP status error")
+			}
+			if strings.Contains(err.Error(), client.Token) {
 				t.Fatalf("error: %v", err)
+			}
+			for _, want := range []string{"acme/widget", "package.json"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
 			}
 		})
 	}
