@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
@@ -31,8 +33,10 @@ const defaultShutdownTimeout = 30 * time.Second
 type cliConfig struct {
 	input        string
 	outputPath   string
+	ecosystem    string
 	ref          string
 	manifestPath string
+	pythonTarget pypi.Target
 	repository   githubsource.Repository
 	isGitHub     bool
 }
@@ -43,11 +47,11 @@ type ManifestSource struct {
 }
 
 func main() {
-	// 1. Read a local package.json path or GitHub repository URL.
+	// 1. Read a local dependency manifest path or GitHub repository URL.
 	config, err := parseCLIArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration: %v\n", err)
-		fmt.Fprintln(os.Stderr, "usage: auditor [--output <path>] [--ref <value>] [--manifest <path>] <package.json-path-or-github-url>")
+		fmt.Fprintln(os.Stderr, "usage: auditor [--ecosystem <npm|python>] [--output <path>] [--ref <value>] [--manifest <path>] <manifest-path-or-github-url>")
 		os.Exit(1)
 	}
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
@@ -61,7 +65,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("manifest source: %v", err)
 	}
-	manifest, err := depfile.ParsePackageJSON(bytes.NewReader(source.Data), true)
+	manifest, err := parseManifest(config, source)
 	if err != nil {
 		log.Fatalf("parse manifest from %s: %v", source.Location, err)
 	}
@@ -75,11 +79,12 @@ func main() {
 			packages := auditor.NewPackageStore()
 			edges := auditor.NewEdgeStore()
 			report := auditor.GenerateReport(packages, edges, rootName)
-			if err := writeMarkdownReport(config.outputPath, rootName, packages, edges, report); err != nil {
+			if err := writeMarkdownReport(config.outputPath, rootName, packages, edges, report, reportMetadata(config)); err != nil {
 				log.Fatal(err)
 			}
 		}
-		fmt.Println("No dependencies found in package.json — nothing to audit.")
+		printPythonTarget(config)
+		fmt.Printf("No dependencies found in %s — nothing to audit.\n", filepath.Base(config.manifestPath))
 		return
 	}
 
@@ -115,7 +120,7 @@ func main() {
 
 	pkgStore := auditor.NewPackageStore()
 	edgeStore := auditor.NewEdgeStore()
-	reg := auditor.NewNpmClient()
+	reg := registryForConfig(config)
 	policy := auditor.LicensePolicy{}
 	handler := auditor.NewAuditHandler(reg, policy, pkgStore, edgeStore)
 
@@ -148,7 +153,7 @@ func main() {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	shutdownErr := pool.Shutdown(shutdownCtx)
-	report, err := finalizeAudit(shutdownErr, config.outputPath, rootName, pkgStore, edgeStore)
+	report, err := finalizeAudit(shutdownErr, config.outputPath, rootName, pkgStore, edgeStore, reportMetadata(config))
 	if shutdownErr != nil {
 		log.Printf("shutdown deadline %s exceeded: %v", shutdownTimeout, shutdownErr)
 		os.Exit(1)
@@ -158,6 +163,7 @@ func main() {
 	}
 
 	// 9 & 10. Print the report generated after successful shutdown.
+	printPythonTarget(config)
 	fmt.Print(report.Summary)
 }
 
@@ -173,14 +179,14 @@ func newSeedJob(rootName string, dependency depfile.Dependency) (job.Job, error)
 	return job.NewJob("audit_package", payload), nil
 }
 
-func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore) (*auditor.Report, error) {
+func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, metadata ...map[string]string) (*auditor.Report, error) {
 	if shutdownErr != nil {
 		return nil, shutdownErr
 	}
 
 	report := auditor.GenerateReport(packages, edges, root)
 	if outputPath != "" {
-		if err := writeMarkdownReport(outputPath, root, packages, edges, report); err != nil {
+		if err := writeMarkdownReport(outputPath, root, packages, edges, report, metadata...); err != nil {
 			return nil, err
 		}
 	}
@@ -191,8 +197,11 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	flags := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	outputPath := flags.String("output", "", "write a Markdown report to this path")
+	ecosystem := flags.String("ecosystem", "npm", "dependency ecosystem: npm or python")
 	ref := flags.String("ref", "", "GitHub branch, tag, or commit")
-	manifestPath := flags.String("manifest", "package.json", "repository-relative package.json path")
+	manifestPath := flags.String("manifest", "package.json", "repository-relative dependency manifest path")
+	pythonVersion := flags.String("python-version", "3.12", "Python target version for dependency markers")
+	pythonPlatform := flags.String("python-platform", "linux", "Python target platform: linux, windows, or darwin")
 	if err := flags.Parse(args); err != nil {
 		return cliConfig{}, err
 	}
@@ -210,16 +219,29 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	if *manifestPath == "" {
 		return cliConfig{}, errors.New("--manifest requires a non-empty path")
 	}
+	if *ecosystem != "npm" && *ecosystem != "python" {
+		return cliConfig{}, fmt.Errorf("--ecosystem must be npm or python, got %q", *ecosystem)
+	}
+	if *ecosystem == "npm" && (setOptions["python-version"] || setOptions["python-platform"]) {
+		return cliConfig{}, errors.New("--python-version and --python-platform are valid only with --ecosystem python")
+	}
 
 	positional := flags.Args()
 	if len(positional) == 0 {
-		return cliConfig{}, errors.New("missing package.json path or GitHub repository URL")
+		return cliConfig{}, errors.New("missing manifest path or GitHub repository URL")
 	}
 	if len(positional) > 1 {
 		return cliConfig{}, fmt.Errorf("unexpected extra positional argument %q", positional[1])
 	}
 
-	config := cliConfig{input: positional[0], outputPath: *outputPath, manifestPath: *manifestPath}
+	config := cliConfig{input: positional[0], outputPath: *outputPath, ecosystem: *ecosystem, manifestPath: *manifestPath}
+	if config.ecosystem == "python" {
+		target, err := pypi.NewTarget(*pythonVersion, *pythonPlatform)
+		if err != nil {
+			return cliConfig{}, err
+		}
+		config.pythonTarget = target
+	}
 	if strings.Contains(config.input, "://") {
 		repository, err := githubsource.ParseRepositoryURL(config.input)
 		if err != nil {
@@ -227,6 +249,16 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		}
 		if err := githubsource.ValidateManifestPath(*manifestPath); err != nil {
 			return cliConfig{}, fmt.Errorf("--manifest: %w", err)
+		}
+		if config.ecosystem == "python" {
+			if !setOptions["manifest"] {
+				return cliConfig{}, errors.New("--manifest is required for Python GitHub input")
+			}
+			if !isPythonManifest(filepath.Base(*manifestPath)) {
+				return cliConfig{}, fmt.Errorf("unsupported Python manifest %q", filepath.Base(*manifestPath))
+			}
+		} else if filepath.Base(*manifestPath) != "package.json" {
+			return cliConfig{}, fmt.Errorf("npm input requires a package.json manifest")
 		}
 		config.ref = *ref
 		config.repository = repository
@@ -236,7 +268,66 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	if setOptions["ref"] || setOptions["manifest"] {
 		return cliConfig{}, errors.New("--ref and --manifest are valid only with GitHub repository input")
 	}
+	if config.ecosystem == "python" {
+		config.manifestPath = filepath.Base(config.input)
+		if !isPythonManifest(config.manifestPath) {
+			return cliConfig{}, fmt.Errorf("unsupported Python manifest %q", config.manifestPath)
+		}
+	}
 	return config, nil
+}
+
+func isPythonManifest(name string) bool {
+	return name == "pyproject.toml" || name == "requirements.txt"
+}
+
+func parseManifest(config cliConfig, source ManifestSource) (depfile.Manifest, error) {
+	reader := bytes.NewReader(source.Data)
+	if config.ecosystem != "python" {
+		return depfile.ParsePackageJSON(reader, true)
+	}
+	switch filepath.Base(config.manifestPath) {
+	case "pyproject.toml":
+		return depfile.ParsePyProject(reader, config.pythonTarget)
+	case "requirements.txt":
+		return depfile.ParseRequirements(reader, requirementsRoot(config), config.pythonTarget)
+	default:
+		return depfile.Manifest{}, fmt.Errorf("unsupported Python manifest %q", config.manifestPath)
+	}
+}
+
+func requirementsRoot(config cliConfig) string {
+	if config.isGitHub {
+		return config.repository.Name
+	}
+	absolute, err := filepath.Abs(config.input)
+	if err != nil {
+		return filepath.Base(filepath.Dir(config.input))
+	}
+	return filepath.Base(filepath.Dir(absolute))
+}
+
+func registryForConfig(config cliConfig) auditor.RegistryClient {
+	if config.ecosystem == "python" {
+		return pypi.NewClient(config.pythonTarget)
+	}
+	return auditor.NewNpmClient()
+}
+
+func reportMetadata(config cliConfig) map[string]string {
+	if config.ecosystem != "python" {
+		return nil
+	}
+	return map[string]string{
+		"Python version":  config.pythonTarget.PythonVersion,
+		"Python platform": config.pythonTarget.Platform,
+	}
+}
+
+func printPythonTarget(config cliConfig) {
+	if config.ecosystem == "python" {
+		fmt.Printf("Python target: %s on %s\n", config.pythonTarget.PythonVersion, config.pythonTarget.Platform)
+	}
 }
 
 func readManifestSource(ctx context.Context, config cliConfig, githubClient *githubsource.GitHubClient) (ManifestSource, error) {
@@ -255,12 +346,17 @@ func readManifestSource(ctx context.Context, config cliConfig, githubClient *git
 	return ManifestSource{Location: config.input, Data: data}, nil
 }
 
-func writeMarkdownReport(outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, report *auditor.Report) error {
+func writeMarkdownReport(outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, report *auditor.Report, metadata ...map[string]string) error {
+	reportMetadata := map[string]string(nil)
+	if len(metadata) > 0 {
+		reportMetadata = metadata[0]
+	}
 	markdown, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
 		Root:     root,
 		Packages: packages.All(),
 		Edges:    edges.All(),
 		Report:   report,
+		Metadata: reportMetadata,
 	})
 	if err != nil {
 		return fmt.Errorf("generate Markdown report for %q: %w", outputPath, err)

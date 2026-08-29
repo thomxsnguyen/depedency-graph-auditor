@@ -42,6 +42,25 @@ func TestGenerateMarkdownReportEmptyGraph(t *testing.T) {
 	}
 }
 
+func TestGenerateMarkdownReportSortsTargetMetadata(t *testing.T) {
+	got, err := auditor.GenerateMarkdownReport(auditor.MarkdownReportInput{
+		Root: "python-app",
+		Metadata: map[string]string{
+			"Python version":  "3.12",
+			"Python platform": "linux",
+		},
+		Report: &auditor.Report{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := strings.Index(got, "- Python platform: `linux`")
+	version := strings.Index(got, "- Python version: `3.12`")
+	if platform < 0 || version < 0 || platform > version {
+		t.Fatalf("metadata missing or nondeterministic:\n%s", got)
+	}
+}
+
 func TestGenerateMarkdownReportUsesProgressiveGraphSections(t *testing.T) {
 	packages := []auditor.Package{
 		{Name: "direct", Version: "1.0.0", Verdict: auditor.VerdictPass},

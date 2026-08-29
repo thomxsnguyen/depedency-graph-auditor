@@ -14,6 +14,7 @@ type MarkdownReportInput struct {
 	Packages []Package
 	Edges    []DependencyEdge
 	Report   *Report
+	Metadata map[string]string
 }
 
 type markdownGraphNode struct {
@@ -56,6 +57,14 @@ func GenerateMarkdownReport(input MarkdownReportInput) (string, error) {
 	out.WriteString("# Dependency Audit Report\n\n")
 	out.WriteString("## Summary\n\n")
 	fmt.Fprintf(&out, "- Root: %s\n", markdownInlineCode(input.Root))
+	metadataKeys := make([]string, 0, len(input.Metadata))
+	for key := range input.Metadata {
+		metadataKeys = append(metadataKeys, key)
+	}
+	sort.Strings(metadataKeys)
+	for _, key := range metadataKeys {
+		fmt.Fprintf(&out, "- %s: %s\n", key, markdownInlineCode(input.Metadata[key]))
+	}
 	fmt.Fprintf(&out, "- Packages scanned: %d\n", input.Report.TotalPackages)
 	fmt.Fprintf(&out, "- Policy violations: %d\n\n", len(violations))
 

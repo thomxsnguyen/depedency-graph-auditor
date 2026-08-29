@@ -17,6 +17,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 )
 
 func TestNewSeedJobCarriesRootParent(t *testing.T) {
@@ -46,17 +47,34 @@ func TestParseCLIArgs(t *testing.T) {
 		want    cliConfig
 		wantErr string
 	}{
-		{name: "input only", args: []string{"package.json"}, want: cliConfig{input: "package.json", manifestPath: "package.json"}},
-		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{input: "package.json", outputPath: "report.md", manifestPath: "package.json"}},
+		{name: "input only", args: []string{"package.json"}, want: cliConfig{input: "package.json", ecosystem: "npm", manifestPath: "package.json"}},
+		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{input: "package.json", outputPath: "report.md", ecosystem: "npm", manifestPath: "package.json"}},
 		{
 			name: "GitHub input with options",
 			args: []string{"--ref", "development", "--manifest", "packages/web/package.json", "https://github.com/acme/widget.git/"},
 			want: cliConfig{
-				input: "https://github.com/acme/widget.git/", ref: "development", manifestPath: "packages/web/package.json",
+				input: "https://github.com/acme/widget.git/", ecosystem: "npm", ref: "development", manifestPath: "packages/web/package.json",
 				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
 		},
-		{name: "missing input", wantErr: "missing package.json path or GitHub repository URL"},
+		{
+			name: "local Python pyproject",
+			args: []string{"--ecosystem", "python", "--python-version", "3.11", "--python-platform", "darwin", "pyproject.toml"},
+			want: cliConfig{
+				input: "pyproject.toml", ecosystem: "python", manifestPath: "pyproject.toml",
+				pythonTarget: mustPythonTarget(t, "3.11", "darwin"),
+			},
+		},
+		{
+			name: "GitHub Python requirements",
+			args: []string{"--ecosystem", "python", "--manifest", "requirements.txt", "https://github.com/acme/widget"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget", ecosystem: "python", manifestPath: "requirements.txt",
+				pythonTarget: mustPythonTarget(t, "3.12", "linux"),
+				repository:   githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
+		{name: "missing input", wantErr: "missing manifest path or GitHub repository URL"},
 		{name: "missing output value", args: []string{"--output"}, wantErr: "flag needs an argument"},
 		{name: "empty output value", args: []string{"--output=", "package.json"}, wantErr: "non-empty path"},
 		{name: "empty ref", args: []string{"--ref=", "https://github.com/acme/widget"}, wantErr: "--ref requires a non-empty value"},
@@ -66,6 +84,11 @@ func TestParseCLIArgs(t *testing.T) {
 		{name: "invalid GitHub scheme", args: []string{"http://github.com/acme/widget"}, wantErr: "must use https"},
 		{name: "invalid GitHub host", args: []string{"https://example.com/acme/widget"}, wantErr: "host must be github.com"},
 		{name: "invalid manifest traversal", args: []string{"--manifest", "../package.json", "https://github.com/acme/widget"}, wantErr: "invalid segment"},
+		{name: "invalid ecosystem", args: []string{"--ecosystem", "ruby", "package.json"}, wantErr: "npm or python"},
+		{name: "Python option with npm", args: []string{"--python-version", "3.11", "package.json"}, wantErr: "valid only"},
+		{name: "Python GitHub manifest required", args: []string{"--ecosystem", "python", "https://github.com/acme/widget"}, wantErr: "--manifest is required"},
+		{name: "unsupported Python local manifest", args: []string{"--ecosystem", "python", "Pipfile"}, wantErr: "unsupported Python manifest"},
+		{name: "unsupported Python platform", args: []string{"--ecosystem", "python", "--python-platform", "solaris", "pyproject.toml"}, wantErr: "unsupported Python platform"},
 		{name: "extra input", args: []string{"one.json", "two.json"}, wantErr: "unexpected extra positional argument"},
 	}
 
@@ -85,6 +108,67 @@ func TestParseCLIArgs(t *testing.T) {
 				t.Fatalf("config: got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func mustPythonTarget(t *testing.T, version, platform string) pypi.Target {
+	t.Helper()
+	target, err := pypi.NewTarget(version, platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func TestParsePythonManifestAndSelectRegistry(t *testing.T) {
+	config, err := parseCLIArgs([]string{"--ecosystem", "python", "pyproject.toml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := parseManifest(config, ManifestSource{Location: "pyproject.toml", Data: []byte(`
+[project]
+name = "python-app"
+dependencies = ["requests>=2"]
+`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Name != "python-app" || len(manifest.Dependencies) != 1 {
+		t.Fatalf("manifest: %+v", manifest)
+	}
+	if _, ok := registryForConfig(config).(*pypi.Client); !ok {
+		t.Fatalf("registry: got %T, want *pypi.Client", registryForConfig(config))
+	}
+}
+
+func TestGitHubPythonRequirementsUseRepositoryAsRoot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/config/requirements.txt" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte("requests>=2\n"))
+	}))
+	defer server.Close()
+	config, err := parseCLIArgs([]string{
+		"--ecosystem", "python",
+		"--manifest", "config/requirements.txt",
+		"https://github.com/acme/widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := readManifestSource(context.Background(), config, &githubsource.GitHubClient{
+		HTTPClient: server.Client(), BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := parseManifest(config, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Name != "widget" || len(manifest.Dependencies) != 1 {
+		t.Fatalf("manifest: %+v", manifest)
 	}
 }
 
@@ -274,6 +358,10 @@ func TestCLIOutputContract(t *testing.T) {
 	if err := os.WriteFile(packagePath, []byte(`{"name":"empty-app","dependencies":{}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	pyprojectPath := filepath.Join(tempDir, "pyproject.toml")
+	if err := os.WriteFile(pyprojectPath, []byte("[project]\nname = \"empty-python-app\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("no output option creates no file", func(t *testing.T) {
 		unusedOutput := filepath.Join(tempDir, "not-created.md")
@@ -301,6 +389,32 @@ func TestCLIOutputContract(t *testing.T) {
 		}
 		if !strings.Contains(string(contents), "# Dependency Audit Report") {
 			t.Fatalf("invalid Markdown report:\n%s", contents)
+		}
+	})
+
+	t.Run("empty Python project reports deterministic target without PostgreSQL", func(t *testing.T) {
+		outputPath := filepath.Join(tempDir, "python-audit.md")
+		result := runCLIProcess(t,
+			"--ecosystem", "python",
+			"--python-version", "3.11",
+			"--python-platform", "darwin",
+			"--output", outputPath,
+			pyprojectPath,
+		)
+		if result.err != nil {
+			t.Fatalf("CLI error: %v\nstderr: %s", result.err, result.stderr)
+		}
+		if !strings.Contains(result.stdout, "Python target: 3.11 on darwin") || !strings.Contains(result.stdout, "No dependencies found in pyproject.toml") {
+			t.Fatalf("stdout: %q", result.stdout)
+		}
+		contents, err := os.ReadFile(outputPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"- Root: `empty-python-app`", "- Python platform: `darwin`", "- Python version: `3.11`"} {
+			if !strings.Contains(string(contents), want) {
+				t.Errorf("Python report missing %q:\n%s", want, contents)
+			}
 		}
 	})
 
