@@ -3,6 +3,8 @@ package depfile_test
 import (
 	"encoding/json"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
@@ -52,15 +54,18 @@ func TestParsePackageJSONProductionDeps(t *testing.T) {
 		},
 	})
 
-	deps, err := depfile.ParsePackageJSON(path, false)
+	manifest, err := depfile.ParsePackageJSONFile(path, false)
 	if err != nil {
 		t.Fatalf("ParsePackageJSON: unexpected error: %v", err)
 	}
-	if len(deps) != 2 {
-		t.Fatalf("expected 2 dependencies, got %d", len(deps))
+	if manifest.Name != "my-app" {
+		t.Fatalf("name: got %q, want %q", manifest.Name, "my-app")
+	}
+	if len(manifest.Dependencies) != 2 {
+		t.Fatalf("expected 2 dependencies, got %d", len(manifest.Dependencies))
 	}
 
-	m := depMap(deps)
+	m := depMap(manifest.Dependencies)
 	if m["express"] != "^4.18.0" {
 		t.Errorf("express version range: got %q, want %q", m["express"], "^4.18.0")
 	}
@@ -82,15 +87,15 @@ func TestParsePackageJSONDevDepsIncluded(t *testing.T) {
 		},
 	})
 
-	deps, err := depfile.ParsePackageJSON(path, true)
+	manifest, err := depfile.ParsePackageJSONFile(path, true)
 	if err != nil {
 		t.Fatalf("ParsePackageJSON: unexpected error: %v", err)
 	}
-	if len(deps) != 2 {
-		t.Fatalf("expected 2 deps (prod + dev), got %d", len(deps))
+	if len(manifest.Dependencies) != 2 {
+		t.Fatalf("expected 2 deps (prod + dev), got %d", len(manifest.Dependencies))
 	}
 
-	m := depMap(deps)
+	m := depMap(manifest.Dependencies)
 	if m["jest"] != "^29.0.0" {
 		t.Errorf("jest (devDep) version range: got %q, want %q", m["jest"], "^29.0.0")
 	}
@@ -109,14 +114,14 @@ func TestParsePackageJSONDevDepsExcluded(t *testing.T) {
 		},
 	})
 
-	deps, err := depfile.ParsePackageJSON(path, false)
+	manifest, err := depfile.ParsePackageJSONFile(path, false)
 	if err != nil {
 		t.Fatalf("ParsePackageJSON: unexpected error: %v", err)
 	}
-	if len(deps) != 1 {
-		t.Fatalf("expected 1 prod dep only, got %d", len(deps))
+	if len(manifest.Dependencies) != 1 {
+		t.Fatalf("expected 1 prod dep only, got %d", len(manifest.Dependencies))
 	}
-	m := depMap(deps)
+	m := depMap(manifest.Dependencies)
 	if _, ok := m["jest"]; ok {
 		t.Error("jest (devDep) should not be present when includeDevDeps=false")
 	}
@@ -129,12 +134,12 @@ func TestParsePackageJSONMissingDependenciesKey(t *testing.T) {
 		"name": "my-app",
 	})
 
-	deps, err := depfile.ParsePackageJSON(path, false)
+	manifest, err := depfile.ParsePackageJSONFile(path, false)
 	if err != nil {
 		t.Fatalf("ParsePackageJSON: unexpected error: %v", err)
 	}
-	if len(deps) != 0 {
-		t.Errorf("expected 0 deps for missing key, got %d", len(deps))
+	if len(manifest.Dependencies) != 0 {
+		t.Errorf("expected 0 deps for missing key, got %d", len(manifest.Dependencies))
 	}
 }
 
@@ -148,18 +153,18 @@ func TestParsePackageJSONMissingDevDependenciesKey(t *testing.T) {
 		},
 	})
 
-	deps, err := depfile.ParsePackageJSON(path, true)
+	manifest, err := depfile.ParsePackageJSONFile(path, true)
 	if err != nil {
 		t.Fatalf("ParsePackageJSON: unexpected error: %v", err)
 	}
-	if len(deps) != 1 {
-		t.Fatalf("expected 1 dep, got %d", len(deps))
+	if len(manifest.Dependencies) != 1 {
+		t.Fatalf("expected 1 dep, got %d", len(manifest.Dependencies))
 	}
 }
 
 // TestParsePackageJSONFileNotFound verifies that a non-existent path returns an error.
 func TestParsePackageJSONFileNotFound(t *testing.T) {
-	_, err := depfile.ParsePackageJSON("/does/not/exist/package.json", false)
+	_, err := depfile.ParsePackageJSONFile("/does/not/exist/package.json", false)
 	if err == nil {
 		t.Error("expected error for missing file, got nil")
 	}
@@ -174,8 +179,31 @@ func TestParsePackageJSONInvalidJSON(t *testing.T) {
 	f.WriteString("not valid json{{{")
 	f.Close()
 
-	_, err = depfile.ParsePackageJSON(f.Name(), false)
+	_, err = depfile.ParsePackageJSONFile(f.Name(), false)
 	if err == nil {
 		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestParsePackageJSONReaderIsDeterministic(t *testing.T) {
+	manifest, err := depfile.ParsePackageJSON(strings.NewReader(`{
+		"name":"reader-app",
+		"dependencies":{"zeta":"2.0.0","alpha":"1.0.0"},
+		"devDependencies":{"middle":"3.0.0"}
+	}`), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := depfile.Manifest{
+		Name: "reader-app",
+		Dependencies: []depfile.Dependency{
+			{Name: "alpha", VersionRange: "1.0.0"},
+			{Name: "middle", VersionRange: "3.0.0"},
+			{Name: "zeta", VersionRange: "2.0.0"},
+		},
+	}
+	if !reflect.DeepEqual(manifest, want) {
+		t.Fatalf("manifest: got %+v, want %+v", manifest, want)
 	}
 }

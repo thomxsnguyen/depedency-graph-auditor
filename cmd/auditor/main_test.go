@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
+	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 )
 
 func TestNewSeedJobCarriesRootParent(t *testing.T) {
@@ -42,11 +46,26 @@ func TestParseCLIArgs(t *testing.T) {
 		want    cliConfig
 		wantErr string
 	}{
-		{name: "input only", args: []string{"package.json"}, want: cliConfig{packageJSONPath: "package.json"}},
-		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{packageJSONPath: "package.json", outputPath: "report.md"}},
-		{name: "missing input", wantErr: "missing package.json path"},
+		{name: "input only", args: []string{"package.json"}, want: cliConfig{input: "package.json", manifestPath: "package.json"}},
+		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{input: "package.json", outputPath: "report.md", manifestPath: "package.json"}},
+		{
+			name: "GitHub input with options",
+			args: []string{"--ref", "development", "--manifest", "packages/web/package.json", "https://github.com/acme/widget.git/"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget.git/", ref: "development", manifestPath: "packages/web/package.json",
+				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
+		{name: "missing input", wantErr: "missing package.json path or GitHub repository URL"},
 		{name: "missing output value", args: []string{"--output"}, wantErr: "flag needs an argument"},
 		{name: "empty output value", args: []string{"--output=", "package.json"}, wantErr: "non-empty path"},
+		{name: "empty ref", args: []string{"--ref=", "https://github.com/acme/widget"}, wantErr: "--ref requires a non-empty value"},
+		{name: "empty manifest", args: []string{"--manifest=", "https://github.com/acme/widget"}, wantErr: "--manifest requires a non-empty path"},
+		{name: "ref on local input", args: []string{"--ref", "main", "package.json"}, wantErr: "valid only with GitHub"},
+		{name: "manifest on local input", args: []string{"--manifest", "web/package.json", "package.json"}, wantErr: "valid only with GitHub"},
+		{name: "invalid GitHub scheme", args: []string{"http://github.com/acme/widget"}, wantErr: "must use https"},
+		{name: "invalid GitHub host", args: []string{"https://example.com/acme/widget"}, wantErr: "host must be github.com"},
+		{name: "invalid manifest traversal", args: []string{"--manifest", "../package.json", "https://github.com/acme/widget"}, wantErr: "invalid segment"},
 		{name: "extra input", args: []string{"one.json", "two.json"}, wantErr: "unexpected extra positional argument"},
 	}
 
@@ -66,6 +85,51 @@ func TestParseCLIArgs(t *testing.T) {
 				t.Fatalf("config: got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReadManifestSourceLocalAndGitHub(t *testing.T) {
+	const packageJSON = `{"name":"example","dependencies":{"react":"^19.1.0"}}`
+	localPath := filepath.Join(t.TempDir(), "package.json")
+	if err := os.WriteFile(localPath, []byte(packageJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	localConfig, err := parseCLIArgs([]string{localPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := readManifestSource(context.Background(), localConfig, &githubsource.GitHubClient{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/package.json" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte(packageJSON))
+	}))
+	defer server.Close()
+	remoteConfig, err := parseCLIArgs([]string{"https://github.com/acme/widget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := readManifestSource(context.Background(), remoteConfig, &githubsource.GitHubClient{
+		HTTPClient: server.Client(), BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(local.Data, remote.Data) {
+		t.Fatalf("source bytes differ: local=%q remote=%q", local.Data, remote.Data)
+	}
+	manifest, err := depfile.ParsePackageJSON(bytes.NewReader(remote.Data), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Name != "example" || len(manifest.Dependencies) != 1 {
+		t.Fatalf("manifest: %+v", manifest)
 	}
 }
 

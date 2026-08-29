@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
+	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
@@ -26,45 +29,59 @@ import (
 const defaultShutdownTimeout = 30 * time.Second
 
 type cliConfig struct {
-	packageJSONPath string
-	outputPath      string
+	input        string
+	outputPath   string
+	ref          string
+	manifestPath string
+	repository   githubsource.Repository
+	isGitHub     bool
+}
+
+type ManifestSource struct {
+	Location string
+	Data     []byte
 }
 
 func main() {
-	// 1. Read a package.json path and optional report path from CLI args.
+	// 1. Read a local package.json path or GitHub repository URL.
 	config, err := parseCLIArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration: %v\n", err)
-		fmt.Fprintln(os.Stderr, "usage: auditor [--output <path>] <path/to/package.json>")
+		fmt.Fprintln(os.Stderr, "usage: auditor [--output <path>] [--ref <value>] [--manifest <path>] <package.json-path-or-github-url>")
 		os.Exit(1)
 	}
-	pkgJSONPath := config.packageJSONPath
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
 	if err != nil {
 		log.Fatalf("configuration: %v", err)
 	}
 
-	// 2. Parse it → extract direct dependencies (prod + dev by default).
-	deps, err := depfile.ParsePackageJSON(pkgJSONPath, true)
+	// 2. Read and parse the manifest before opening PostgreSQL.
+	githubClient := &githubsource.GitHubClient{Token: os.Getenv("GITHUB_TOKEN")}
+	source, err := readManifestSource(context.Background(), config, githubClient)
 	if err != nil {
-		log.Fatalf("depfile: %v", err)
+		log.Fatalf("manifest source: %v", err)
+	}
+	manifest, err := depfile.ParsePackageJSON(bytes.NewReader(source.Data), true)
+	if err != nil {
+		log.Fatalf("parse manifest from %s: %v", source.Location, err)
+	}
+	deps := manifest.Dependencies
+	rootName := manifest.Name
+	if rootName == "" {
+		rootName = source.Location
 	}
 	if len(deps) == 0 {
 		if config.outputPath != "" {
 			packages := auditor.NewPackageStore()
 			edges := auditor.NewEdgeStore()
-			report := auditor.GenerateReport(packages, edges, rootNameFromFile(pkgJSONPath))
-			if err := writeMarkdownReport(config.outputPath, rootNameFromFile(pkgJSONPath), packages, edges, report); err != nil {
+			report := auditor.GenerateReport(packages, edges, rootName)
+			if err := writeMarkdownReport(config.outputPath, rootName, packages, edges, report); err != nil {
 				log.Fatal(err)
 			}
 		}
 		fmt.Println("No dependencies found in package.json — nothing to audit.")
 		return
 	}
-
-	// Derive the root name from the package.json "name" field if present,
-	// otherwise fall back to the file path.
-	rootName := rootNameFromFile(pkgJSONPath)
 
 	// 3. Version ranges are resolved lazily by the registry client when each
 	//    job is processed — no pre-flight resolution is needed here.
@@ -174,29 +191,68 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	flags := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	outputPath := flags.String("output", "", "write a Markdown report to this path")
+	ref := flags.String("ref", "", "GitHub branch, tag, or commit")
+	manifestPath := flags.String("manifest", "package.json", "repository-relative package.json path")
 	if err := flags.Parse(args); err != nil {
 		return cliConfig{}, err
 	}
 
-	outputSet := false
+	setOptions := make(map[string]bool)
 	flags.Visit(func(current *flag.Flag) {
-		if current.Name == "output" {
-			outputSet = true
-		}
+		setOptions[current.Name] = true
 	})
-	if outputSet && *outputPath == "" {
+	if setOptions["output"] && *outputPath == "" {
 		return cliConfig{}, errors.New("--output requires a non-empty path")
+	}
+	if setOptions["ref"] && *ref == "" {
+		return cliConfig{}, errors.New("--ref requires a non-empty value")
+	}
+	if *manifestPath == "" {
+		return cliConfig{}, errors.New("--manifest requires a non-empty path")
 	}
 
 	positional := flags.Args()
 	if len(positional) == 0 {
-		return cliConfig{}, errors.New("missing package.json path")
+		return cliConfig{}, errors.New("missing package.json path or GitHub repository URL")
 	}
 	if len(positional) > 1 {
 		return cliConfig{}, fmt.Errorf("unexpected extra positional argument %q", positional[1])
 	}
 
-	return cliConfig{packageJSONPath: positional[0], outputPath: *outputPath}, nil
+	config := cliConfig{input: positional[0], outputPath: *outputPath, manifestPath: *manifestPath}
+	if strings.Contains(config.input, "://") {
+		repository, err := githubsource.ParseRepositoryURL(config.input)
+		if err != nil {
+			return cliConfig{}, err
+		}
+		if err := githubsource.ValidateManifestPath(*manifestPath); err != nil {
+			return cliConfig{}, fmt.Errorf("--manifest: %w", err)
+		}
+		config.ref = *ref
+		config.repository = repository
+		config.isGitHub = true
+		return config, nil
+	}
+	if setOptions["ref"] || setOptions["manifest"] {
+		return cliConfig{}, errors.New("--ref and --manifest are valid only with GitHub repository input")
+	}
+	return config, nil
+}
+
+func readManifestSource(ctx context.Context, config cliConfig, githubClient *githubsource.GitHubClient) (ManifestSource, error) {
+	if config.isGitHub {
+		data, err := githubClient.FetchManifest(ctx, config.repository, config.manifestPath, config.ref)
+		if err != nil {
+			return ManifestSource{}, err
+		}
+		return ManifestSource{Location: config.input + "/" + config.manifestPath, Data: data}, nil
+	}
+
+	data, err := os.ReadFile(config.input)
+	if err != nil {
+		return ManifestSource{}, fmt.Errorf("read local manifest %q: %w", config.input, err)
+	}
+	return ManifestSource{Location: config.input, Data: data}, nil
 }
 
 func writeMarkdownReport(outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, report *auditor.Report) error {
@@ -229,22 +285,4 @@ func shutdownTimeoutFromEnv() (time.Duration, error) {
 		return 0, fmt.Errorf("SHUTDOWN_TIMEOUT must be positive, got %q", value)
 	}
 	return timeout, nil
-}
-
-// rootNameFromFile reads the "name" field from a package.json file.
-// If the file cannot be read or has no "name", it falls back to the path string.
-func rootNameFromFile(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return path
-	}
-	defer f.Close()
-
-	var pkg struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(f).Decode(&pkg); err != nil || pkg.Name == "" {
-		return path
-	}
-	return pkg.Name
 }
