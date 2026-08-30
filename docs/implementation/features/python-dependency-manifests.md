@@ -2,9 +2,9 @@
 
 ## Status
 
-Proposed feature. This document defines the implementation boundary for
-auditing Python dependencies declared in `pyproject.toml` or
-`requirements.txt`. It does not implement the feature.
+Implemented. The required deterministic, race-enabled, and PostgreSQL
+integration suites pass. The optional public-repository smoke test is not part
+of required completion.
 
 ## Goal
 
@@ -510,21 +510,21 @@ all deterministic tests pass.
 
 ## Exit Criteria
 
-- [ ] Existing npm local and GitHub inputs behave as before.
-- [ ] A local `pyproject.toml` produces Python seed dependencies.
-- [ ] A local `requirements.txt` produces Python seed dependencies.
-- [ ] Public GitHub input can select either supported Python manifest.
-- [ ] PEP 440 constraints resolve to exact public PyPI versions.
-- [ ] Supported environment markers are deterministic for the configured target.
-- [ ] Active transitive `Requires-Dist` metadata produces graph edges.
-- [ ] Python package names are normalized consistently.
-- [ ] Python license metadata reaches the existing policy checker.
-- [ ] Unsupported executable, local, VCS, URL, and dynamic inputs fail safely.
-- [ ] No Python or repository code is executed.
-- [ ] npm behavior and output remain unchanged.
-- [ ] No database migration is added.
-- [ ] Required deterministic and race-enabled tests pass.
-- [ ] PostgreSQL integration tests pass.
+- [x] Existing npm local and GitHub inputs behave as before.
+- [x] A local `pyproject.toml` produces Python seed dependencies.
+- [x] A local `requirements.txt` produces Python seed dependencies.
+- [x] Public GitHub input can select either supported Python manifest.
+- [x] PEP 440 constraints resolve to exact public PyPI versions.
+- [x] Supported environment markers are deterministic for the configured target.
+- [x] Active transitive `Requires-Dist` metadata produces graph edges.
+- [x] Python package names are normalized consistently.
+- [x] Python license metadata reaches the existing policy checker.
+- [x] Unsupported executable, local, VCS, URL, and dynamic inputs fail safely.
+- [x] No Python or repository code is executed.
+- [x] npm behavior and output remain unchanged.
+- [x] No database migration is added.
+- [x] Required deterministic and race-enabled tests pass.
+- [x] PostgreSQL integration tests pass.
 
 ## Explicit Non-Goals for Completion
 

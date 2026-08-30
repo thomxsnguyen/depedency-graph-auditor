@@ -373,7 +373,7 @@ func matchesClauses(version Version, raw string, clauses []versionClause) bool {
 				return false
 			}
 		case "<":
-			if compared >= 0 {
+			if compared >= 0 || (!clause.version.hasPre && samePublicRelease(version, clause.version) && (version.hasPre || version.hasDev)) {
 				return false
 			}
 		case "<=":
@@ -381,7 +381,7 @@ func matchesClauses(version Version, raw string, clauses []versionClause) bool {
 				return false
 			}
 		case ">":
-			if compared <= 0 {
+			if compared <= 0 || (!clause.version.hasPost && samePublicRelease(version, clause.version) && version.hasPost) {
 				return false
 			}
 		case ">=":
@@ -421,4 +421,8 @@ func compareSpecifierVersion(candidate, specified Version) int {
 		candidate.local = nil
 	}
 	return candidate.Compare(specified)
+}
+
+func samePublicRelease(left, right Version) bool {
+	return left.epoch == right.epoch && compareRelease(left.release, right.release) == 0
 }

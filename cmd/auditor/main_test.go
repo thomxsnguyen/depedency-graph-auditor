@@ -172,6 +172,37 @@ func TestGitHubPythonRequirementsUseRepositoryAsRoot(t *testing.T) {
 	}
 }
 
+func TestGitHubPythonPyProjectUsesManifestName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/pyproject.toml" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte("[project]\nname = \"github-python-app\"\ndependencies = [\"requests>=2\"]\n"))
+	}))
+	defer server.Close()
+	config, err := parseCLIArgs([]string{
+		"--ecosystem", "python",
+		"--manifest", "pyproject.toml",
+		"https://github.com/acme/widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := readManifestSource(context.Background(), config, &githubsource.GitHubClient{
+		HTTPClient: server.Client(), BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := parseManifest(config, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Name != "github-python-app" || len(manifest.Dependencies) != 1 {
+		t.Fatalf("manifest: %+v", manifest)
+	}
+}
+
 func TestReadManifestSourceLocalAndGitHub(t *testing.T) {
 	const packageJSON = `{"name":"example","dependencies":{"react":"^19.1.0"}}`
 	localPath := filepath.Join(t.TempDir(), "package.json")

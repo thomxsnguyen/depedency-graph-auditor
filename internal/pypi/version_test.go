@@ -40,7 +40,7 @@ func TestResolveVersionPEP440Constraints(t *testing.T) {
 		{constraint: ">=1.4,!=1.5.0,<2", want: "1.4.5"},
 		{constraint: "===2.0.0", want: "2.0.0"},
 		{constraint: "==2.0.0", want: "2.0.0+local.1"},
-		{constraint: ">=1.5.0rc1,<1.5.0", want: "1.5.0rc1"},
+		{constraint: ">=1.5.0rc1,<1.5.0rc2", want: "1.5.0rc1"},
 	}
 	for _, test := range tests {
 		t.Run(test.constraint, func(t *testing.T) {
@@ -64,5 +64,17 @@ func TestResolveVersionRejectsNoMatch(t *testing.T) {
 func TestResolveVersionRejectsInvalidCompatibleConstraint(t *testing.T) {
 	if _, err := ResolveVersion("~=1", []string{"1.0"}); err == nil {
 		t.Fatal("expected invalid compatible-constraint error")
+	}
+}
+
+func TestResolveVersionExclusiveBoundaryRules(t *testing.T) {
+	if _, err := ResolveVersion("<1.0", []string{"1.0rc1"}); err == nil {
+		t.Fatal("<1.0 must not select a prerelease of 1.0")
+	}
+	if _, err := ResolveVersion(">1.0", []string{"1.0.post1"}); err == nil {
+		t.Fatal(">1.0 must not select a post-release of 1.0")
+	}
+	if got, err := ResolveVersion(">1.0.post0", []string{"1.0.post1"}); err != nil || got != "1.0.post1" {
+		t.Fatalf("post-release boundary: got %q, error %v", got, err)
 	}
 }

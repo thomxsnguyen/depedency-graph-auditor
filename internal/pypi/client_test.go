@@ -142,6 +142,11 @@ func TestPyPIClientIntegratesWithExistingAuditHandler(t *testing.T) {
 	if len(packages.All()) != 2 || len(edges.All()) != 2 {
 		t.Fatalf("packages=%+v edges=%+v", packages.All(), edges.All())
 	}
+	for _, pkg := range packages.All() {
+		if pkg.Verdict != auditor.VerdictPass {
+			t.Errorf("package did not reach existing license policy: %+v", pkg)
+		}
+	}
 }
 
 func TestPythonLicensePrecedence(t *testing.T) {
