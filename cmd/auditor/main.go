@@ -21,6 +21,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
@@ -85,17 +86,14 @@ func main() {
 			packages := auditor.NewPackageStore()
 			edges := auditor.NewEdgeStore()
 			report := auditor.GenerateReport(packages, edges, rootName)
-			if err := writeMarkdownReport(config.outputPath, rootName, packages, edges, report, reportMetadata(config)); err != nil {
+			if err := writeMarkdownReport(config.outputPath, rootName, packages, edges, report, reportMetadata(config, parsedManifest.GoVersion)); err != nil {
 				log.Fatal(err)
 			}
 		}
 		printPythonTarget(config)
+		printGoMetadataLimitation(config)
 		fmt.Printf("No dependencies found in %s — nothing to audit.\n", filepath.Base(config.manifestPath))
 		return
-	}
-	reg, err := registryForConfig(config)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	// 3. Version ranges are resolved lazily by the registry client when each
@@ -124,9 +122,25 @@ func main() {
 	}
 
 	jobStore := storepg.New(dbPool)
+	deadLetters := dlq.New(jobStore)
+	if config.ecosystem == "go" {
+		roundFetcher := gomod.NewQueueRoundFetcher(gomod.NewClient(), jobStore, deadLetters)
+		roundFetcher.SetShutdownTimeout(shutdownTimeout)
+		report, err := runGoAudit(signalCtx, config, parsedManifest, rootName, roundFetcher)
+		if err != nil {
+			log.Fatalf("Go module audit: %v", err)
+		}
+		printGoMetadataLimitation(config)
+		fmt.Print(report.Summary)
+		return
+	}
+
+	reg, err := registryForConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
 	const bufferSize = 100
 	q := queue.New(bufferSize, jobStore)
-	deadLetters := dlq.New(jobStore)
 
 	pkgStore := auditor.NewPackageStore()
 	edgeStore := auditor.NewEdgeStore()
@@ -162,7 +176,7 @@ func main() {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	shutdownErr := pool.Shutdown(shutdownCtx)
-	report, err := finalizeAudit(shutdownErr, config.outputPath, rootName, pkgStore, edgeStore, reportMetadata(config))
+	report, err := finalizeAudit(shutdownErr, config.outputPath, rootName, pkgStore, edgeStore, reportMetadata(config, parsedManifest.GoVersion))
 	if shutdownErr != nil {
 		log.Printf("shutdown deadline %s exceeded: %v", shutdownTimeout, shutdownErr)
 		os.Exit(1)
@@ -186,6 +200,28 @@ func newSeedJob(rootName string, dependency depfile.Dependency) (job.Job, error)
 		return job.Job{}, err
 	}
 	return job.NewJob("audit_package", payload), nil
+}
+
+func selectGoManifest(ctx context.Context, manifest manifestParseResult, fetcher gomod.RoundFetcher) (gomod.Selection, error) {
+	requirements := make([]gomod.Requirement, 0, len(manifest.Seed.Dependencies))
+	for _, dependency := range manifest.Seed.Dependencies {
+		requirements = append(requirements, gomod.Requirement{
+			ModulePath: dependency.Name,
+			Version:    dependency.VersionRange,
+		})
+	}
+	return gomod.Select(ctx, manifest.Seed.Name, manifest.GoVersion, requirements, fetcher)
+}
+
+func runGoAudit(ctx context.Context, config cliConfig, manifest manifestParseResult, rootName string, fetcher gomod.RoundFetcher) (*auditor.Report, error) {
+	selection, err := selectGoManifest(ctx, manifest, fetcher)
+	if err != nil {
+		return nil, err
+	}
+	packages := auditor.NewPackageStore()
+	edges := auditor.NewEdgeStore()
+	gomod.MapSelection(selection, packages, edges, auditor.LicensePolicy{})
+	return finalizeAudit(nil, config.outputPath, rootName, packages, edges, reportMetadata(config, manifest.GoVersion))
 }
 
 func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor.PackageStore, edges *auditor.EdgeStore, metadata ...map[string]string) (*auditor.Report, error) {
@@ -365,19 +401,32 @@ func registryForConfig(config cliConfig) (auditor.RegistryClient, error) {
 	}
 }
 
-func reportMetadata(config cliConfig) map[string]string {
-	if config.ecosystem != "python" {
+func reportMetadata(config cliConfig, goVersion string) map[string]string {
+	switch config.ecosystem {
+	case "python":
+		return map[string]string{
+			"Python version":  config.pythonTarget.PythonVersion,
+			"Python platform": config.pythonTarget.Platform,
+		}
+	case "go":
+		return map[string]string{
+			"Go version":       goVersion,
+			"License metadata": "UNKNOWN — public Go proxy .mod metadata does not include canonical licenses",
+		}
+	default:
 		return nil
-	}
-	return map[string]string{
-		"Python version":  config.pythonTarget.PythonVersion,
-		"Python platform": config.pythonTarget.Platform,
 	}
 }
 
 func printPythonTarget(config cliConfig) {
 	if config.ecosystem == "python" {
 		fmt.Printf("Python target: %s on %s\n", config.pythonTarget.PythonVersion, config.pythonTarget.Platform)
+	}
+}
+
+func printGoMetadataLimitation(config cliConfig) {
+	if config.ecosystem == "go" {
+		fmt.Println("Go module license metadata: UNKNOWN (public proxy .mod metadata does not include canonical licenses)")
 	}
 }
 

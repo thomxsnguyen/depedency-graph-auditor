@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,8 +18,15 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 )
+
+type mainRoundFetcherFunc func(context.Context, []gomod.Coordinate) (map[gomod.Coordinate]gomod.Metadata, error)
+
+func (f mainRoundFetcherFunc) FetchRound(ctx context.Context, coordinates []gomod.Coordinate) (map[gomod.Coordinate]gomod.Metadata, error) {
+	return f(ctx, coordinates)
+}
 
 func TestNewSeedJobCarriesRootParent(t *testing.T) {
 	seed, err := newSeedJob("personal-portfolio", depfile.Dependency{
@@ -248,6 +256,127 @@ func TestGoManifestCannotUseLegacyRegistryResolver(t *testing.T) {
 	}
 	if registry != nil {
 		t.Fatalf("registry: got %T, want nil", registry)
+	}
+}
+
+func TestSelectGoManifestAdaptsSharedSeed(t *testing.T) {
+	parsed, err := parseManifest(cliConfig{ecosystem: "go", manifestPath: "go.mod"}, ManifestSource{Data: []byte(`
+module example.com/root
+go 1.16
+require (
+	example.com/a v1.0.0
+	example.com/b v1.0.0
+)
+`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[gomod.Coordinate]gomod.Metadata{
+		{ModulePath: "example.com/a", Version: "v1.0.0"}: {ModulePath: "example.com/a"},
+		{ModulePath: "example.com/b", Version: "v1.0.0"}: {ModulePath: "example.com/b"},
+	}
+	fetcher := mainRoundFetcherFunc(func(_ context.Context, coordinates []gomod.Coordinate) (map[gomod.Coordinate]gomod.Metadata, error) {
+		result := make(map[gomod.Coordinate]gomod.Metadata, len(coordinates))
+		for _, coordinate := range coordinates {
+			result[coordinate] = fixtures[coordinate]
+		}
+		return result, nil
+	})
+	selection, err := selectGoManifest(context.Background(), parsed, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []gomod.Coordinate{
+		{ModulePath: "example.com/a", Version: "v1.0.0"},
+		{ModulePath: "example.com/b", Version: "v1.0.0"},
+	}
+	if !reflect.DeepEqual(selection.Modules, want) {
+		t.Fatalf("modules: got %+v, want %+v", selection.Modules, want)
+	}
+}
+
+func TestGitHubGoManifestUsesExistingSourceBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/contents/services/api/go.mod" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		_, _ = writer.Write([]byte("module example.com/service\ngo 1.23\n"))
+	}))
+	defer server.Close()
+	config, err := parseCLIArgs([]string{
+		"--ecosystem", "go", "--manifest", "services/api/go.mod", "https://github.com/acme/widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := readManifestSource(context.Background(), config, &githubsource.GitHubClient{HTTPClient: server.Client(), BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseManifest(config, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Seed.Name != "example.com/service" || parsed.GoVersion != "1.23" {
+		t.Fatalf("manifest: %+v", parsed)
+	}
+}
+
+func TestGoReportMetadataIdentifiesLicenseLimitation(t *testing.T) {
+	metadata := reportMetadata(cliConfig{ecosystem: "go"}, "1.23")
+	if metadata["Go version"] != "1.23" || !strings.Contains(metadata["License metadata"], "UNKNOWN") {
+		t.Fatalf("metadata: %+v", metadata)
+	}
+}
+
+func TestRunGoAuditMapsSelectionAndWritesReport(t *testing.T) {
+	parsed, err := parseManifest(cliConfig{ecosystem: "go", manifestPath: "go.mod"}, ManifestSource{Data: []byte(`
+module example.com/root
+go 1.16
+require example.com/a v1.0.0
+`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinate := gomod.Coordinate{ModulePath: "example.com/a", Version: "v1.0.0"}
+	fetcher := mainRoundFetcherFunc(func(_ context.Context, coordinates []gomod.Coordinate) (map[gomod.Coordinate]gomod.Metadata, error) {
+		return map[gomod.Coordinate]gomod.Metadata{coordinate: {ModulePath: coordinate.ModulePath}}, nil
+	})
+	outputPath := filepath.Join(t.TempDir(), "go-audit.md")
+	report, err := runGoAudit(context.Background(), cliConfig{ecosystem: "go", outputPath: outputPath}, parsed, parsed.Seed.Name, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TotalPackages != 1 || len(report.PolicyViolations) != 1 {
+		t.Fatalf("report: %+v", report)
+	}
+	markdown, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(markdown, []byte("example.com/a")) || !bytes.Contains(markdown, []byte("UNKNOWN")) || !bytes.Contains(markdown, []byte("Go version")) {
+		t.Fatalf("Markdown omitted Go graph metadata:\n%s", markdown)
+	}
+}
+
+func TestRunGoAuditDoesNotWriteIncompleteReport(t *testing.T) {
+	parsed, err := parseManifest(cliConfig{ecosystem: "go", manifestPath: "go.mod"}, ManifestSource{Data: []byte(`
+module example.com/root
+go 1.16
+require example.com/a v1.0.0
+`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(t.TempDir(), "incomplete.md")
+	fetcher := mainRoundFetcherFunc(func(context.Context, []gomod.Coordinate) (map[gomod.Coordinate]gomod.Metadata, error) {
+		return nil, errors.New("proxy unavailable")
+	})
+	if _, err := runGoAudit(context.Background(), cliConfig{ecosystem: "go", outputPath: outputPath}, parsed, parsed.Seed.Name, fetcher); err == nil {
+		t.Fatal("expected incomplete Go audit to fail")
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("incomplete report was written or stat failed unexpectedly: %v", err)
 	}
 }
 

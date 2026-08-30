@@ -40,7 +40,7 @@ func TestSelectSingleVersionAndTransitiveFixedPoint(t *testing.T) {
 		a: metadata(a, requirement(b)),
 		b: metadata(b),
 	}}
-	selection, err := Select(context.Background(), "example.com/root", []Requirement{requirement(a)}, fetcher)
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(a)}, fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestSelectDiamondChoosesHighestSharedVersion(t *testing.T) {
 		b:          metadata(b, requirement(sharedHigh)),
 		sharedHigh: metadata(sharedHigh),
 	}}
-	selection, err := Select(context.Background(), "example.com/root", []Requirement{requirement(b), requirement(a)}, fetcher)
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(b), requirement(a)}, fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestSelectPromotionExcludesFetchedLowerVersion(t *testing.T) {
 		sharedLow:  metadata(sharedLow),
 		sharedHigh: metadata(sharedHigh),
 	}}
-	selection, err := Select(context.Background(), "example.com/root", []Requirement{requirement(a)}, fetcher)
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(a)}, fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestSelectUsesGoOrderingAndKeepsMajorPathsDistinct(t *testing.T) {
 		moduleV1:   metadata(moduleV1),
 		moduleV2:   metadata(moduleV2),
 	}}
-	selection, err := Select(context.Background(), "example.com/root", []Requirement{
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{
 		requirement(producerA), requirement(producerB), requirement(moduleV2), requirement(moduleV1),
 	}, fetcher)
 	if err != nil {
@@ -141,12 +141,12 @@ func TestSelectIsIndependentOfRequirementAndFetchMapOrder(t *testing.T) {
 		b: metadata(b, requirement(c)),
 		c: metadata(c),
 	}
-	first, err := Select(context.Background(), "example.com/root", []Requirement{requirement(a), requirement(b)}, &fixtureRoundFetcher{metadata: fixtures})
+	first, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(a), requirement(b)}, &fixtureRoundFetcher{metadata: fixtures})
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondFixtures := map[Coordinate]Metadata{c: fixtures[c], b: fixtures[b], a: fixtures[a]}
-	second, err := Select(context.Background(), "example.com/root", []Requirement{requirement(b), requirement(a)}, &fixtureRoundFetcher{metadata: secondFixtures})
+	second, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(b), requirement(a)}, &fixtureRoundFetcher{metadata: secondFixtures})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,11 +159,11 @@ func TestSelectBreaksSemanticVersionTiesDeterministically(t *testing.T) {
 	plain := coordinate("example.com/module", "v1.2.3")
 	incompatible := coordinate("example.com/module", "v1.2.3+incompatible")
 	fixtures := map[Coordinate]Metadata{incompatible: metadata(incompatible)}
-	first, err := Select(context.Background(), "example.com/root", []Requirement{requirement(plain), requirement(incompatible)}, &fixtureRoundFetcher{metadata: fixtures})
+	first, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(plain), requirement(incompatible)}, &fixtureRoundFetcher{metadata: fixtures})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Select(context.Background(), "example.com/root", []Requirement{requirement(incompatible), requirement(plain)}, &fixtureRoundFetcher{metadata: fixtures})
+	second, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(incompatible), requirement(plain)}, &fixtureRoundFetcher{metadata: fixtures})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestSelectBreaksSemanticVersionTiesDeterministically(t *testing.T) {
 func TestSelectDeduplicatesCoordinatesAndEdges(t *testing.T) {
 	a := coordinate("example.com/a", "v1.0.0")
 	fetcher := &fixtureRoundFetcher{metadata: map[Coordinate]Metadata{a: metadata(a)}}
-	selection, err := Select(context.Background(), "example.com/root", []Requirement{requirement(a), requirement(a)}, fetcher)
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(a), requirement(a)}, fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,12 +187,101 @@ func TestSelectDeduplicatesCoordinatesAndEdges(t *testing.T) {
 }
 
 func TestSelectEmptyBuildListNeedsNoFetcher(t *testing.T) {
-	selection, err := Select(context.Background(), "example.com/root", nil, nil)
+	selection, err := Select(context.Background(), "example.com/root", "1.23", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(selection.Modules) != 0 || len(selection.Edges) != 0 {
 		t.Fatalf("selection: %+v", selection)
+	}
+}
+
+func TestSelectPrunesTransitiveMetadataForModernGraph(t *testing.T) {
+	a := coordinate("example.com/a", "v1.0.0")
+	b := coordinate("example.com/b", "v1.0.0")
+	c := coordinate("example.com/c", "v1.0.0")
+	fetcher := &fixtureRoundFetcher{metadata: map[Coordinate]Metadata{
+		a: {ModulePath: a.ModulePath, GoVersion: "1.20", Requirements: []Requirement{requirement(b)}},
+		b: {ModulePath: b.ModulePath, GoVersion: "1.20", Requirements: []Requirement{requirement(c)}},
+	}}
+	selection, err := Select(context.Background(), "example.com/root", "1.23", []Requirement{requirement(a)}, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinates(t, selection.Modules, []Coordinate{a, b})
+	if fetcher.counts[a] != 1 || fetcher.counts[b] != 1 || fetcher.counts[c] != 0 {
+		t.Fatalf("fetch counts: a=%d b=%d", fetcher.counts[a], fetcher.counts[b])
+	}
+	if !containsEdge(selection.Edges, SelectedEdge{From: a, To: b}) {
+		t.Fatalf("immediate pruned-graph edge missing: %+v", selection.Edges)
+	}
+	if containsEdge(selection.Edges, SelectedEdge{From: b, To: c}) {
+		t.Fatalf("pruned requirement edge leaked into selection: %+v", selection.Edges)
+	}
+}
+
+func TestSelectDiscoversLegacyClosureBehindModernDependency(t *testing.T) {
+	modern := coordinate("example.com/modern", "v1.0.0")
+	legacy := coordinate("example.com/legacy", "v1.0.0")
+	child := coordinate("example.com/child", "v1.0.0")
+	fetcher := &fixtureRoundFetcher{metadata: map[Coordinate]Metadata{
+		modern: {ModulePath: modern.ModulePath, GoVersion: "1.20", Requirements: []Requirement{requirement(legacy)}},
+		legacy: {ModulePath: legacy.ModulePath, GoVersion: "1.16", Requirements: []Requirement{requirement(child)}},
+		child:  metadata(child),
+	}}
+	selection, err := Select(context.Background(), "example.com/root", "1.23", []Requirement{requirement(modern)}, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinates(t, selection.Modules, []Coordinate{child, legacy, modern})
+	if fetcher.counts[modern] != 1 || fetcher.counts[legacy] != 1 || fetcher.counts[child] != 1 {
+		t.Fatalf("fetch counts: modern=%d legacy=%d child=%d", fetcher.counts[modern], fetcher.counts[legacy], fetcher.counts[child])
+	}
+	if !containsEdge(selection.Edges, SelectedEdge{From: legacy, To: child}) {
+		t.Fatalf("legacy closure edge missing: %+v", selection.Edges)
+	}
+}
+
+func TestSelectLoadsFullClosureThroughLegacyDependency(t *testing.T) {
+	modern := coordinate("example.com/modern", "v1.0.0")
+	legacy := coordinate("example.com/legacy", "v1.0.0")
+	shared := coordinate("example.com/shared", "v1.0.0")
+	child := coordinate("example.com/child", "v1.0.0")
+	fetcher := &fixtureRoundFetcher{metadata: map[Coordinate]Metadata{
+		modern: {ModulePath: modern.ModulePath, GoVersion: "1.20", Requirements: []Requirement{requirement(shared)}},
+		legacy: {ModulePath: legacy.ModulePath, GoVersion: "1.16", Requirements: []Requirement{requirement(shared)}},
+		shared: {ModulePath: shared.ModulePath, GoVersion: "1.20", Requirements: []Requirement{requirement(child)}},
+		child:  metadata(child),
+	}}
+	selection, err := Select(context.Background(), "example.com/root", "1.23", []Requirement{requirement(modern), requirement(legacy)}, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinates(t, selection.Modules, []Coordinate{child, legacy, modern, shared})
+	for _, coordinate := range []Coordinate{modern, legacy, shared, child} {
+		if fetcher.counts[coordinate] != 1 {
+			t.Fatalf("fetch count for %+v: got %d, want 1", coordinate, fetcher.counts[coordinate])
+		}
+	}
+	if !containsEdge(selection.Edges, SelectedEdge{From: shared, To: child}) {
+		t.Fatalf("legacy closure edge missing: %+v", selection.Edges)
+	}
+}
+
+func TestSelectPrePruningRootLoadsFullClosure(t *testing.T) {
+	modern := coordinate("example.com/modern", "v1.0.0")
+	child := coordinate("example.com/child", "v1.0.0")
+	fetcher := &fixtureRoundFetcher{metadata: map[Coordinate]Metadata{
+		modern: {ModulePath: modern.ModulePath, GoVersion: "1.23", Requirements: []Requirement{requirement(child)}},
+		child:  metadata(child),
+	}}
+	selection, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(modern)}, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCoordinates(t, selection.Modules, []Coordinate{child, modern})
+	if fetcher.counts[child] != 1 {
+		t.Fatalf("child fetch count: got %d, want 1", fetcher.counts[child])
 	}
 }
 
@@ -210,7 +299,7 @@ func TestSelectRejectsIncompleteOrInvalidRounds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Select(context.Background(), "example.com/root", []Requirement{requirement(a)}, tt.fetcher)
+			_, err := Select(context.Background(), "example.com/root", "1.16", []Requirement{requirement(a)}, tt.fetcher)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
 			}

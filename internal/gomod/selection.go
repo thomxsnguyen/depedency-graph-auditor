@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"golang.org/x/mod/module"
+	modsemver "golang.org/x/mod/semver"
 )
 
 // Coordinate identifies one exact module version.
@@ -34,26 +36,38 @@ type RoundFetcher interface {
 	FetchRound(context.Context, []Coordinate) (map[Coordinate]Metadata, error)
 }
 
-// Select resolves the fixed-point MVS build list over the requirement metadata
-// supplied by fetch rounds. Requirement pruning is intentionally owned by the
-// caller that supplies metadata to this boundary.
-func Select(ctx context.Context, rootModulePath string, rootRequirements []Requirement, fetcher RoundFetcher) (Selection, error) {
+// Select resolves the fixed-point MVS build list over requirement metadata
+// supplied by fetch rounds and applies graph pruning from the root and module
+// go directives.
+func Select(ctx context.Context, rootModulePath, rootGoVersion string, rootRequirements []Requirement, fetcher RoundFetcher) (Selection, error) {
 	if err := module.CheckPath(rootModulePath); err != nil {
 		return Selection{}, fmt.Errorf("MVS root module %q: %w", rootModulePath, err)
+	}
+	if err := validateGoDirective(rootGoVersion); err != nil {
+		return Selection{}, fmt.Errorf("MVS root go directive: %w", err)
 	}
 	if err := validateRequirements("root", rootRequirements); err != nil {
 		return Selection{}, err
 	}
 
 	metadataCache := make(map[Coordinate]Metadata)
+	loadModes := make(map[Coordinate]loadMode)
+	rootMode := loadDirect
+	if !pruningEnabled(rootGoVersion) {
+		rootMode = loadFull
+	}
+	for _, requirement := range rootRequirements {
+		promoteLoadMode(loadModes, Coordinate{ModulePath: requirement.ModulePath, Version: requirement.Version}, rootMode)
+	}
 	for {
-		selected, err := computeSelected(rootRequirements, metadataCache)
+		propagateLoadModes(loadModes, metadataCache)
+		selected, err := computeSelected(rootRequirements, metadataCache, loadModes)
 		if err != nil {
 			return Selection{}, err
 		}
 		missing := missingCoordinates(selected, metadataCache)
 		if len(missing) == 0 {
-			return buildSelection(rootModulePath, rootRequirements, selected, metadataCache)
+			return buildSelection(rootModulePath, rootRequirements, selected, metadataCache, loadModes)
 		}
 		if fetcher == nil {
 			return Selection{}, fmt.Errorf("MVS metadata fetcher is required")
@@ -69,7 +83,7 @@ func Select(ctx context.Context, rootModulePath string, rootRequirements []Requi
 	}
 }
 
-func computeSelected(rootRequirements []Requirement, metadataCache map[Coordinate]Metadata) (map[string]string, error) {
+func computeSelected(rootRequirements []Requirement, metadataCache map[Coordinate]Metadata, loadModes map[Coordinate]loadMode) (map[string]string, error) {
 	selected := make(map[string]string)
 	for _, requirement := range rootRequirements {
 		if err := selectHigher(selected, requirement); err != nil {
@@ -78,6 +92,9 @@ func computeSelected(rootRequirements []Requirement, metadataCache map[Coordinat
 	}
 	coordinates := sortedMetadataCoordinates(metadataCache)
 	for _, coordinate := range coordinates {
+		if loadModes[coordinate] == loadNone {
+			continue
+		}
 		for _, requirement := range metadataCache[coordinate].Requirements {
 			if err := selectHigher(selected, requirement); err != nil {
 				return nil, err
@@ -156,7 +173,7 @@ func validateRequirements(owner string, requirements []Requirement) error {
 	return nil
 }
 
-func buildSelection(rootModulePath string, rootRequirements []Requirement, selected map[string]string, metadataCache map[Coordinate]Metadata) (Selection, error) {
+func buildSelection(rootModulePath string, rootRequirements []Requirement, selected map[string]string, metadataCache map[Coordinate]Metadata, loadModes map[Coordinate]loadMode) (Selection, error) {
 	modules := make([]Coordinate, 0, len(selected))
 	for modulePath, version := range selected {
 		modules = append(modules, Coordinate{ModulePath: modulePath, Version: version})
@@ -167,9 +184,12 @@ func buildSelection(rootModulePath string, rootRequirements []Requirement, selec
 	root := Coordinate{ModulePath: rootModulePath}
 	addSelectedEdges(edgeSet, root, rootRequirements, selected)
 	for _, coordinate := range modules {
+		if loadModes[coordinate] == loadNone {
+			continue
+		}
 		metadata, exists := metadataCache[coordinate]
 		if !exists {
-			return Selection{}, fmt.Errorf("MVS selected metadata is missing for %s@%s", coordinate.ModulePath, coordinate.Version)
+			continue
 		}
 		addSelectedEdges(edgeSet, coordinate, metadata.Requirements, selected)
 	}
@@ -189,6 +209,65 @@ func buildSelection(rootModulePath string, rootRequirements []Requirement, selec
 		return compareCoordinates(edges[i].To, edges[j].To) < 0
 	})
 	return Selection{Modules: modules, Edges: edges}, nil
+}
+
+type loadMode uint8
+
+const (
+	loadNone loadMode = iota
+	loadDirect
+	loadFull
+)
+
+func propagateLoadModes(loadModes map[Coordinate]loadMode, metadataCache map[Coordinate]Metadata) {
+	for changed := true; changed; {
+		changed = false
+		for _, coordinate := range sortedMetadataCoordinates(metadataCache) {
+			mode := loadModes[coordinate]
+			metadata := metadataCache[coordinate]
+			if mode == loadNone && !pruningEnabled(metadata.GoVersion) {
+				if promoteLoadMode(loadModes, coordinate, loadFull) {
+					changed = true
+				}
+				mode = loadFull
+			}
+			if mode == loadNone {
+				continue
+			}
+			expandChildren := mode == loadFull || !pruningEnabled(metadata.GoVersion)
+			if !expandChildren {
+				continue
+			}
+			for _, requirement := range metadata.Requirements {
+				child := Coordinate{ModulePath: requirement.ModulePath, Version: requirement.Version}
+				if promoteLoadMode(loadModes, child, loadFull) {
+					changed = true
+				}
+			}
+		}
+	}
+}
+
+func promoteLoadMode(loadModes map[Coordinate]loadMode, coordinate Coordinate, mode loadMode) bool {
+	if loadModes[coordinate] >= mode {
+		return false
+	}
+	loadModes[coordinate] = mode
+	return true
+}
+
+func pruningEnabled(goVersion string) bool {
+	if strings.TrimSpace(goVersion) == "" {
+		return false
+	}
+	return modsemver.Compare("v"+goVersion, "v1.17") >= 0
+}
+
+func validateGoDirective(goVersion string) error {
+	if strings.TrimSpace(goVersion) == "" || !modsemver.IsValid("v"+goVersion) {
+		return fmt.Errorf("invalid Go version %q", goVersion)
+	}
+	return nil
 }
 
 func addSelectedEdges(edges map[SelectedEdge]struct{}, from Coordinate, requirements []Requirement, selected map[string]string) {

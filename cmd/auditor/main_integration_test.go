@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -24,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
 	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
@@ -465,4 +468,126 @@ func TestPhase5AuditorSmoke(t *testing.T) {
 	if status != job.StatusCompleted {
 		t.Fatalf("auditor smoke job status=%q, want %q", status, job.StatusCompleted)
 	}
+}
+
+func TestGoAuditDurableQueuedTransitiveGraph(t *testing.T) {
+	db := setupPhase5IntegrationDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/example.com/a/@v/v1.0.0.mod":
+			_, _ = writer.Write([]byte("module example.com/a\ngo 1.16\nrequire example.com/b v1.2.0\n"))
+		case "/example.com/b/@v/v1.2.0.mod":
+			_, _ = writer.Write([]byte("module example.com/b\ngo 1.16\n"))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	parsed := parseIntegrationGoManifest(t, "module example.com/root\ngo 1.16\nrequire example.com/a v1.0.0\n")
+	outputPath := filepath.Join(t.TempDir(), "go-report.md")
+	fetcher := gomod.NewQueueRoundFetcher(
+		&gomod.Client{HTTPClient: server.Client(), BaseURL: server.URL},
+		storepg.New(db.pool),
+		dlq.New(storepg.New(db.pool)),
+	)
+	fetcher.SetShutdownTimeout(5 * time.Second)
+	report, err := runGoAudit(context.Background(), cliConfig{ecosystem: "go", outputPath: outputPath}, parsed, parsed.Seed.Name, fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TotalPackages != 2 {
+		t.Fatalf("packages: got %d, want 2", report.TotalPackages)
+	}
+	markdown, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(markdown, []byte("example.com/b")) || !bytes.Contains(markdown, []byte("UNKNOWN")) {
+		t.Fatalf("Go report missing transitive graph or license limitation:\n%s", markdown)
+	}
+	var completed int
+	if err := db.pool.QueryRow(context.Background(), `SELECT count(*) FROM jobs WHERE status=$1`, job.StatusCompleted).Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 2 {
+		t.Fatalf("completed durable jobs: got %d, want 2", completed)
+	}
+}
+
+func TestGoAuditRetriesRateLimitThroughDurableQueue(t *testing.T) {
+	db := setupPhase5IntegrationDB(t)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			writer.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = writer.Write([]byte("module example.com/a\ngo 1.23\n"))
+	}))
+	defer server.Close()
+
+	parsed := parseIntegrationGoManifest(t, "module example.com/root\ngo 1.23\nrequire example.com/a v1.0.0\n")
+	store := storepg.New(db.pool)
+	fetcher := gomod.NewQueueRoundFetcher(&gomod.Client{HTTPClient: server.Client(), BaseURL: server.URL}, store, dlq.New(store))
+	fetcher.SetShutdownTimeout(5 * time.Second)
+	if _, err := runGoAudit(context.Background(), cliConfig{ecosystem: "go"}, parsed, parsed.Seed.Name, fetcher); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("proxy calls: got %d, want 2", calls.Load())
+	}
+	var attempts int
+	if err := db.pool.QueryRow(context.Background(), `SELECT attempts FROM jobs LIMIT 1`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("persisted attempts: got %d, want 1", attempts)
+	}
+}
+
+func TestGoAuditPermanentFailureProducesNoReport(t *testing.T) {
+	db := setupPhase5IntegrationDB(t)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writer.WriteHeader(http.StatusNotFound)
+		_, _ = writer.Write([]byte("must not appear in errors"))
+	}))
+	defer server.Close()
+
+	parsed := parseIntegrationGoManifest(t, "module example.com/root\ngo 1.23\nrequire example.com/missing v1.0.0\n")
+	store := storepg.New(db.pool)
+	fetcher := gomod.NewQueueRoundFetcher(&gomod.Client{HTTPClient: server.Client(), BaseURL: server.URL}, store, dlq.New(store))
+	fetcher.SetShutdownTimeout(5 * time.Second)
+	outputPath := filepath.Join(t.TempDir(), "must-not-exist.md")
+	_, err := runGoAudit(context.Background(), cliConfig{ecosystem: "go", outputPath: outputPath}, parsed, parsed.Seed.Name, fetcher)
+	if err == nil {
+		t.Fatal("expected permanent proxy failure")
+	}
+	if bytes.Contains([]byte(err.Error()), []byte("must not appear")) {
+		t.Fatalf("error exposed proxy response body: %v", err)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("incomplete report was written: %v", statErr)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("permanent proxy calls: got %d, want 1", calls.Load())
+	}
+	var deadLettered int
+	if err := db.pool.QueryRow(context.Background(), `SELECT count(*) FROM jobs WHERE status=$1`, job.StatusDeadLettered).Scan(&deadLettered); err != nil {
+		t.Fatal(err)
+	}
+	if deadLettered != 1 {
+		t.Fatalf("dead-lettered jobs: got %d, want 1", deadLettered)
+	}
+}
+
+func parseIntegrationGoManifest(t *testing.T, content string) manifestParseResult {
+	t.Helper()
+	parsed, err := parseManifest(cliConfig{ecosystem: "go", manifestPath: "go.mod"}, ManifestSource{Location: "go.mod", Data: []byte(content)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }
