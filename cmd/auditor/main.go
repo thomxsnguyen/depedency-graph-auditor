@@ -46,6 +46,11 @@ type ManifestSource struct {
 	Data     []byte
 }
 
+type manifestParseResult struct {
+	Seed      depfile.Manifest
+	GoVersion string
+}
+
 func main() {
 	// 1. Read a local dependency manifest path or GitHub repository URL.
 	config, err := parseCLIArgs(os.Args[1:])
@@ -65,10 +70,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("manifest source: %v", err)
 	}
-	manifest, err := parseManifest(config, source)
+	parsedManifest, err := parseManifest(config, source)
 	if err != nil {
 		log.Fatalf("parse manifest from %s: %v", source.Location, err)
 	}
+	manifest := parsedManifest.Seed
 	deps := manifest.Dependencies
 	rootName := manifest.Name
 	if rootName == "" {
@@ -86,6 +92,10 @@ func main() {
 		printPythonTarget(config)
 		fmt.Printf("No dependencies found in %s — nothing to audit.\n", filepath.Base(config.manifestPath))
 		return
+	}
+	reg, err := registryForConfig(config)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	// 3. Version ranges are resolved lazily by the registry client when each
@@ -120,7 +130,6 @@ func main() {
 
 	pkgStore := auditor.NewPackageStore()
 	edgeStore := auditor.NewEdgeStore()
-	reg := registryForConfig(config)
 	policy := auditor.LicensePolicy{}
 	handler := auditor.NewAuditHandler(reg, policy, pkgStore, edgeStore)
 
@@ -296,35 +305,41 @@ func isPythonManifest(name string) bool {
 	return name == "pyproject.toml" || name == "requirements.txt"
 }
 
-func parseManifest(config cliConfig, source ManifestSource) (depfile.Manifest, error) {
+func parseManifest(config cliConfig, source ManifestSource) (manifestParseResult, error) {
 	reader := bytes.NewReader(source.Data)
 	manifestName := filepath.Base(config.manifestPath)
 	switch config.ecosystem {
 	case "npm":
 		if manifestName != "package.json" {
-			return depfile.Manifest{}, fmt.Errorf("unsupported npm manifest %q", manifestName)
+			return manifestParseResult{}, fmt.Errorf("unsupported npm manifest %q", manifestName)
 		}
-		return depfile.ParsePackageJSON(reader, true)
+		manifest, err := depfile.ParsePackageJSON(reader, true)
+		return manifestParseResult{Seed: manifest}, err
 	case "python":
+		var (
+			manifest depfile.Manifest
+			err      error
+		)
 		switch manifestName {
 		case "pyproject.toml":
-			return depfile.ParsePyProject(reader, config.pythonTarget)
+			manifest, err = depfile.ParsePyProject(reader, config.pythonTarget)
 		case "requirements.txt":
-			return depfile.ParseRequirements(reader, requirementsRoot(config), config.pythonTarget)
+			manifest, err = depfile.ParseRequirements(reader, requirementsRoot(config), config.pythonTarget)
 		default:
-			return depfile.Manifest{}, fmt.Errorf("unsupported Python manifest %q", manifestName)
+			return manifestParseResult{}, fmt.Errorf("unsupported Python manifest %q", manifestName)
 		}
+		return manifestParseResult{Seed: manifest}, err
 	case "go":
 		if manifestName != "go.mod" {
-			return depfile.Manifest{}, fmt.Errorf("unsupported Go manifest %q", manifestName)
+			return manifestParseResult{}, fmt.Errorf("unsupported Go manifest %q", manifestName)
 		}
 		manifest, err := depfile.ParseGoMod(reader)
 		if err != nil {
-			return depfile.Manifest{}, err
+			return manifestParseResult{}, err
 		}
-		return manifest.Manifest, nil
+		return manifestParseResult{Seed: manifest.Manifest, GoVersion: manifest.GoVersion}, nil
 	default:
-		return depfile.Manifest{}, fmt.Errorf("unsupported ecosystem %q", config.ecosystem)
+		return manifestParseResult{}, fmt.Errorf("unsupported ecosystem %q", config.ecosystem)
 	}
 }
 
@@ -339,11 +354,15 @@ func requirementsRoot(config cliConfig) string {
 	return filepath.Base(filepath.Dir(absolute))
 }
 
-func registryForConfig(config cliConfig) auditor.RegistryClient {
-	if config.ecosystem == "python" {
-		return pypi.NewClient(config.pythonTarget)
+func registryForConfig(config cliConfig) (auditor.RegistryClient, error) {
+	switch config.ecosystem {
+	case "npm":
+		return auditor.NewNpmClient(), nil
+	case "python":
+		return pypi.NewClient(config.pythonTarget), nil
+	default:
+		return nil, fmt.Errorf("no package registry resolver for ecosystem %q", config.ecosystem)
 	}
-	return auditor.NewNpmClient()
 }
 
 func reportMetadata(config cliConfig) map[string]string {

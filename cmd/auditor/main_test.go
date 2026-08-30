@@ -159,21 +159,27 @@ dependencies = ["requests>=2"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Name != "python-app" || len(manifest.Dependencies) != 1 {
+	if manifest.Seed.Name != "python-app" || len(manifest.Seed.Dependencies) != 1 {
 		t.Fatalf("manifest: %+v", manifest)
 	}
-	if _, ok := registryForConfig(config).(*pypi.Client); !ok {
-		t.Fatalf("registry: got %T, want *pypi.Client", registryForConfig(config))
+	registry, err := registryForConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.(*pypi.Client); !ok {
+		t.Fatalf("registry: got %T, want *pypi.Client", registry)
 	}
 }
 
 func TestManifestSelectionUsesLogicalBasename(t *testing.T) {
 	tests := []struct {
-		name     string
-		config   cliConfig
-		data     string
-		wantName string
-		wantErr  string
+		name          string
+		config        cliConfig
+		data          string
+		wantName      string
+		wantGoVersion string
+		wantVersion   string
+		wantErr       string
 	}{
 		{
 			name:   "npm package JSON",
@@ -191,9 +197,10 @@ func TestManifestSelectionUsesLogicalBasename(t *testing.T) {
 			data:   `{"name":"web","dependencies":{}}`, wantErr: `unsupported npm manifest "manifest.json"`,
 		},
 		{
-			name:   "Go selects go.mod parser boundary",
-			config: cliConfig{ecosystem: "go", manifestPath: "services/api/go.mod"},
-			data:   "module example.com/service\n\ngo 1.23\n", wantName: "example.com/service",
+			name:     "Go preserves shared seed and Go metadata",
+			config:   cliConfig{ecosystem: "go", manifestPath: "services/api/go.mod"},
+			data:     "module example.com/service\n\ngo 1.23\n\nrequire example.com/dependency v1.2.3\n",
+			wantName: "example.com/service", wantGoVersion: "1.23", wantVersion: "v1.2.3",
 		},
 		{
 			name:   "Go wrong basename",
@@ -219,10 +226,28 @@ func TestManifestSelectionUsesLogicalBasename(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if manifest.Name != tt.wantName {
-				t.Fatalf("manifest name: got %q, want %q", manifest.Name, tt.wantName)
+			if manifest.Seed.Name != tt.wantName {
+				t.Fatalf("manifest name: got %q, want %q", manifest.Seed.Name, tt.wantName)
+			}
+			if manifest.GoVersion != tt.wantGoVersion {
+				t.Fatalf("Go version: got %q, want %q", manifest.GoVersion, tt.wantGoVersion)
+			}
+			if tt.wantVersion != "" {
+				if len(manifest.Seed.Dependencies) != 1 || manifest.Seed.Dependencies[0].VersionRange != tt.wantVersion {
+					t.Fatalf("shared dependency seed: got %+v, want exact version %q", manifest.Seed.Dependencies, tt.wantVersion)
+				}
 			}
 		})
+	}
+}
+
+func TestGoManifestCannotUseLegacyRegistryResolver(t *testing.T) {
+	registry, err := registryForConfig(cliConfig{ecosystem: "go"})
+	if err == nil || !strings.Contains(err.Error(), `no package registry resolver for ecosystem "go"`) {
+		t.Fatalf("error: got %v", err)
+	}
+	if registry != nil {
+		t.Fatalf("registry: got %T, want nil", registry)
 	}
 }
 
@@ -252,7 +277,7 @@ func TestGitHubPythonRequirementsUseRepositoryAsRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Name != "widget" || len(manifest.Dependencies) != 1 {
+	if manifest.Seed.Name != "widget" || len(manifest.Seed.Dependencies) != 1 {
 		t.Fatalf("manifest: %+v", manifest)
 	}
 }
@@ -283,7 +308,7 @@ func TestGitHubPythonPyProjectUsesManifestName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Name != "github-python-app" || len(manifest.Dependencies) != 1 {
+	if manifest.Seed.Name != "github-python-app" || len(manifest.Seed.Dependencies) != 1 {
 		t.Fatalf("manifest: %+v", manifest)
 	}
 }
