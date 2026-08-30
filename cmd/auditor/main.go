@@ -318,7 +318,11 @@ func parseManifest(config cliConfig, source ManifestSource) (depfile.Manifest, e
 		if manifestName != "go.mod" {
 			return depfile.Manifest{}, fmt.Errorf("unsupported Go manifest %q", manifestName)
 		}
-		return depfile.Manifest{}, errors.New("Go go.mod parser is not implemented")
+		manifest, err := depfile.ParseGoMod(reader)
+		if err != nil {
+			return depfile.Manifest{}, err
+		}
+		return manifest.Manifest, nil
 	default:
 		return depfile.Manifest{}, fmt.Errorf("unsupported ecosystem %q", config.ecosystem)
 	}

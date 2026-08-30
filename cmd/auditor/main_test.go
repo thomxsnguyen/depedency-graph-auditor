@@ -193,7 +193,7 @@ func TestManifestSelectionUsesLogicalBasename(t *testing.T) {
 		{
 			name:   "Go selects go.mod parser boundary",
 			config: cliConfig{ecosystem: "go", manifestPath: "services/api/go.mod"},
-			data:   `{"name":"must-not-be-parsed-as-npm","dependencies":{}}`, wantErr: "Go go.mod parser is not implemented",
+			data:   "module example.com/service\n\ngo 1.23\n", wantName: "example.com/service",
 		},
 		{
 			name:   "Go wrong basename",
