@@ -167,6 +167,65 @@ dependencies = ["requests>=2"]
 	}
 }
 
+func TestManifestSelectionUsesLogicalBasename(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   cliConfig
+		data     string
+		wantName string
+		wantErr  string
+	}{
+		{
+			name:   "npm package JSON",
+			config: cliConfig{ecosystem: "npm", manifestPath: "package.json"},
+			data:   `{"name":"web","dependencies":{}}`, wantName: "web",
+		},
+		{
+			name:   "nested npm package JSON",
+			config: cliConfig{ecosystem: "npm", manifestPath: "apps/web/package.json"},
+			data:   `{"name":"web","dependencies":{}}`, wantName: "web",
+		},
+		{
+			name:   "npm wrong basename",
+			config: cliConfig{ecosystem: "npm", manifestPath: "manifest.json"},
+			data:   `{"name":"web","dependencies":{}}`, wantErr: `unsupported npm manifest "manifest.json"`,
+		},
+		{
+			name:   "Go selects go.mod parser boundary",
+			config: cliConfig{ecosystem: "go", manifestPath: "services/api/go.mod"},
+			data:   `{"name":"must-not-be-parsed-as-npm","dependencies":{}}`, wantErr: "Go go.mod parser is not implemented",
+		},
+		{
+			name:   "Go wrong basename",
+			config: cliConfig{ecosystem: "go", manifestPath: "services/api/package.json"},
+			data:   `{"name":"must-not-be-content-guessed","dependencies":{}}`, wantErr: `unsupported Go manifest "package.json"`,
+		},
+		{
+			name:    "unknown ecosystem",
+			config:  cliConfig{ecosystem: "ruby", manifestPath: "Gemfile"},
+			wantErr: `unsupported ecosystem "ruby"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest, err := parseManifest(tt.config, ManifestSource{Location: tt.config.manifestPath, Data: []byte(tt.data)})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error: got %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.Name != tt.wantName {
+				t.Fatalf("manifest name: got %q, want %q", manifest.Name, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestGitHubPythonRequirementsUseRepositoryAsRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/repos/acme/widget/contents/config/requirements.txt" {

@@ -298,16 +298,29 @@ func isPythonManifest(name string) bool {
 
 func parseManifest(config cliConfig, source ManifestSource) (depfile.Manifest, error) {
 	reader := bytes.NewReader(source.Data)
-	if config.ecosystem != "python" {
+	manifestName := filepath.Base(config.manifestPath)
+	switch config.ecosystem {
+	case "npm":
+		if manifestName != "package.json" {
+			return depfile.Manifest{}, fmt.Errorf("unsupported npm manifest %q", manifestName)
+		}
 		return depfile.ParsePackageJSON(reader, true)
-	}
-	switch filepath.Base(config.manifestPath) {
-	case "pyproject.toml":
-		return depfile.ParsePyProject(reader, config.pythonTarget)
-	case "requirements.txt":
-		return depfile.ParseRequirements(reader, requirementsRoot(config), config.pythonTarget)
+	case "python":
+		switch manifestName {
+		case "pyproject.toml":
+			return depfile.ParsePyProject(reader, config.pythonTarget)
+		case "requirements.txt":
+			return depfile.ParseRequirements(reader, requirementsRoot(config), config.pythonTarget)
+		default:
+			return depfile.Manifest{}, fmt.Errorf("unsupported Python manifest %q", manifestName)
+		}
+	case "go":
+		if manifestName != "go.mod" {
+			return depfile.Manifest{}, fmt.Errorf("unsupported Go manifest %q", manifestName)
+		}
+		return depfile.Manifest{}, errors.New("Go go.mod parser is not implemented")
 	default:
-		return depfile.Manifest{}, fmt.Errorf("unsupported Python manifest %q", config.manifestPath)
+		return depfile.Manifest{}, fmt.Errorf("unsupported ecosystem %q", config.ecosystem)
 	}
 }
 
