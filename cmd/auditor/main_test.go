@@ -74,6 +74,27 @@ func TestParseCLIArgs(t *testing.T) {
 				repository:   githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
 		},
+		{
+			name: "local Go manifest",
+			args: []string{"--ecosystem", "go", "services/api/go.mod"},
+			want: cliConfig{input: "services/api/go.mod", ecosystem: "go", manifestPath: "go.mod"},
+		},
+		{
+			name: "GitHub Go manifest",
+			args: []string{"--ecosystem", "go", "--manifest", "go.mod", "https://github.com/acme/widget"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget", ecosystem: "go", manifestPath: "go.mod",
+				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
+		{
+			name: "nested GitHub Go manifest with ref",
+			args: []string{"--ecosystem", "go", "--manifest", "services/api/go.mod", "--ref", "main", "https://github.com/acme/widget"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget", ecosystem: "go", ref: "main", manifestPath: "services/api/go.mod",
+				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
 		{name: "missing input", wantErr: "missing manifest path or GitHub repository URL"},
 		{name: "missing output value", args: []string{"--output"}, wantErr: "flag needs an argument"},
 		{name: "empty output value", args: []string{"--output=", "package.json"}, wantErr: "non-empty path"},
@@ -84,11 +105,16 @@ func TestParseCLIArgs(t *testing.T) {
 		{name: "invalid GitHub scheme", args: []string{"http://github.com/acme/widget"}, wantErr: "must use https"},
 		{name: "invalid GitHub host", args: []string{"https://example.com/acme/widget"}, wantErr: "host must be github.com"},
 		{name: "invalid manifest traversal", args: []string{"--manifest", "../package.json", "https://github.com/acme/widget"}, wantErr: "invalid segment"},
-		{name: "invalid ecosystem", args: []string{"--ecosystem", "ruby", "package.json"}, wantErr: "npm or python"},
+		{name: "invalid ecosystem", args: []string{"--ecosystem", "ruby", "package.json"}, wantErr: "npm, python, or go"},
 		{name: "Python option with npm", args: []string{"--python-version", "3.11", "package.json"}, wantErr: "valid only"},
+		{name: "Python option with Go", args: []string{"--ecosystem", "go", "--python-version", "3.11", "go.mod"}, wantErr: "valid only with --ecosystem python"},
 		{name: "Python GitHub manifest required", args: []string{"--ecosystem", "python", "https://github.com/acme/widget"}, wantErr: "--manifest is required"},
 		{name: "unsupported Python local manifest", args: []string{"--ecosystem", "python", "Pipfile"}, wantErr: "unsupported Python manifest"},
 		{name: "unsupported Python platform", args: []string{"--ecosystem", "python", "--python-platform", "solaris", "pyproject.toml"}, wantErr: "unsupported Python platform"},
+		{name: "Go GitHub manifest required", args: []string{"--ecosystem", "go", "https://github.com/acme/widget"}, wantErr: "--manifest is required for Go GitHub input"},
+		{name: "wrong local Go basename", args: []string{"--ecosystem", "go", "gomod.txt"}, wantErr: "local file named go.mod"},
+		{name: "wrong GitHub Go basename", args: []string{"--ecosystem", "go", "--manifest", "package.json", "https://github.com/acme/widget"}, wantErr: "requires a go.mod manifest"},
+		{name: "Go manifest option on local input", args: []string{"--ecosystem", "go", "--manifest", "go.mod", "go.mod"}, wantErr: "valid only with GitHub"},
 		{name: "extra input", args: []string{"one.json", "two.json"}, wantErr: "unexpected extra positional argument"},
 	}
 

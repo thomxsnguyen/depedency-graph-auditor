@@ -51,7 +51,7 @@ func main() {
 	config, err := parseCLIArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration: %v\n", err)
-		fmt.Fprintln(os.Stderr, "usage: auditor [--ecosystem <npm|python>] [--output <path>] [--ref <value>] [--manifest <path>] <manifest-path-or-github-url>")
+		fmt.Fprintln(os.Stderr, "usage: auditor [--ecosystem <npm|python|go>] [--output <path>] [--ref <value>] [--manifest <path>] <manifest-path-or-github-url>")
 		os.Exit(1)
 	}
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
@@ -197,7 +197,7 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	flags := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	outputPath := flags.String("output", "", "write a Markdown report to this path")
-	ecosystem := flags.String("ecosystem", "npm", "dependency ecosystem: npm or python")
+	ecosystem := flags.String("ecosystem", "npm", "dependency ecosystem: npm, python, or go")
 	ref := flags.String("ref", "", "GitHub branch, tag, or commit")
 	manifestPath := flags.String("manifest", "package.json", "repository-relative dependency manifest path")
 	pythonVersion := flags.String("python-version", "3.12", "Python target version for dependency markers")
@@ -219,10 +219,10 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	if *manifestPath == "" {
 		return cliConfig{}, errors.New("--manifest requires a non-empty path")
 	}
-	if *ecosystem != "npm" && *ecosystem != "python" {
-		return cliConfig{}, fmt.Errorf("--ecosystem must be npm or python, got %q", *ecosystem)
+	if *ecosystem != "npm" && *ecosystem != "python" && *ecosystem != "go" {
+		return cliConfig{}, fmt.Errorf("--ecosystem must be npm, python, or go, got %q", *ecosystem)
 	}
-	if *ecosystem == "npm" && (setOptions["python-version"] || setOptions["python-platform"]) {
+	if *ecosystem != "python" && (setOptions["python-version"] || setOptions["python-platform"]) {
 		return cliConfig{}, errors.New("--python-version and --python-platform are valid only with --ecosystem python")
 	}
 
@@ -250,15 +250,25 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		if err := githubsource.ValidateManifestPath(*manifestPath); err != nil {
 			return cliConfig{}, fmt.Errorf("--manifest: %w", err)
 		}
-		if config.ecosystem == "python" {
+		switch config.ecosystem {
+		case "python":
 			if !setOptions["manifest"] {
 				return cliConfig{}, errors.New("--manifest is required for Python GitHub input")
 			}
 			if !isPythonManifest(filepath.Base(*manifestPath)) {
 				return cliConfig{}, fmt.Errorf("unsupported Python manifest %q", filepath.Base(*manifestPath))
 			}
-		} else if filepath.Base(*manifestPath) != "package.json" {
-			return cliConfig{}, fmt.Errorf("npm input requires a package.json manifest")
+		case "go":
+			if !setOptions["manifest"] {
+				return cliConfig{}, errors.New("--manifest is required for Go GitHub input")
+			}
+			if filepath.Base(*manifestPath) != "go.mod" {
+				return cliConfig{}, errors.New("Go input requires a go.mod manifest")
+			}
+		case "npm":
+			if filepath.Base(*manifestPath) != "package.json" {
+				return cliConfig{}, errors.New("npm input requires a package.json manifest")
+			}
 		}
 		config.ref = *ref
 		config.repository = repository
@@ -272,6 +282,11 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		config.manifestPath = filepath.Base(config.input)
 		if !isPythonManifest(config.manifestPath) {
 			return cliConfig{}, fmt.Errorf("unsupported Python manifest %q", config.manifestPath)
+		}
+	} else if config.ecosystem == "go" {
+		config.manifestPath = filepath.Base(config.input)
+		if config.manifestPath != "go.mod" {
+			return cliConfig{}, errors.New("Go input requires a local file named go.mod")
 		}
 	}
 	return config, nil
