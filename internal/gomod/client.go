@@ -80,7 +80,7 @@ func NewClient() *Client { return &Client{} }
 
 // Fetch retrieves and parses one exact module coordinate.
 func (c *Client) Fetch(ctx context.Context, modulePath, version string) (Metadata, error) {
-	if err := validateCoordinate(modulePath, version); err != nil {
+	if err := ValidateCoordinate(modulePath, version); err != nil {
 		return Metadata{}, fmt.Errorf("go proxy: invalid coordinate %s@%s: %w", modulePath, version, err)
 	}
 	escapedPath, err := module.EscapePath(modulePath)

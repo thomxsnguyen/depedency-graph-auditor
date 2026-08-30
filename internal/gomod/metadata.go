@@ -8,7 +8,6 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
-	modsemver "golang.org/x/mod/semver"
 )
 
 // Requirement is one exact module requirement from a dependency go.mod.
@@ -44,7 +43,7 @@ func ParseMetadata(data []byte) (Metadata, error) {
 	for _, requirement := range file.Require {
 		path := requirement.Mod.Path
 		version := requirement.Mod.Version
-		if err := validateCoordinate(path, version); err != nil {
+		if err := ValidateCoordinate(path, version); err != nil {
 			return Metadata{}, fmt.Errorf("dependency go.mod requirement %s@%s: %w", path, version, err)
 		}
 		requirements = append(requirements, Requirement{
@@ -57,7 +56,7 @@ func ParseMetadata(data []byte) (Metadata, error) {
 		if requirements[i].ModulePath != requirements[j].ModulePath {
 			return requirements[i].ModulePath < requirements[j].ModulePath
 		}
-		comparison := modsemver.Compare(requirements[i].Version, requirements[j].Version)
+		comparison := compareCanonicalVersions(requirements[i].Version, requirements[j].Version)
 		if comparison != 0 {
 			return comparison < 0
 		}
@@ -69,16 +68,6 @@ func ParseMetadata(data []byte) (Metadata, error) {
 		metadata.GoVersion = file.Go.Version
 	}
 	return metadata, nil
-}
-
-func validateCoordinate(path, version string) error {
-	if err := module.Check(path, version); err != nil {
-		return err
-	}
-	if module.CanonicalVersion(version) != version {
-		return fmt.Errorf("version must be canonical")
-	}
-	return nil
 }
 
 func preserveVersion(_ string, version string) (string, error) {

@@ -58,6 +58,14 @@ func ParseGoMod(reader io.Reader) (GoManifest, error) {
 		if module.CanonicalVersion(version) != version {
 			return GoManifest{}, fmt.Errorf("depfile: go.mod requirement %s@%s: version must be canonical", path, version)
 		}
+		if module.IsPseudoVersion(version) {
+			if _, err := module.PseudoVersionTime(version); err != nil {
+				return GoManifest{}, fmt.Errorf("depfile: go.mod requirement %s@%s: invalid pseudo-version: %w", path, version, err)
+			}
+			if _, err := module.PseudoVersionBase(version); err != nil {
+				return GoManifest{}, fmt.Errorf("depfile: go.mod requirement %s@%s: invalid pseudo-version: %w", path, version, err)
+			}
+		}
 		dependencies = append(dependencies, Dependency{Name: path, VersionRange: version})
 	}
 	sort.SliceStable(dependencies, func(i, j int) bool {

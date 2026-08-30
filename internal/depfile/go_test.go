@@ -101,6 +101,7 @@ func TestParseGoModRejectsInvalidRootContracts(t *testing.T) {
 		{name: "npm range", content: "module example.com/service\ngo 1.23\nrequire example.com/a ^1.2.3\n", wantErr: "version"},
 		{name: "noncanonical version", content: "module example.com/service\ngo 1.23\nrequire example.com/a v1.2\n", wantErr: "version must be canonical"},
 		{name: "major mismatch", content: "module example.com/service\ngo 1.23\nrequire example.com/a/v2 v1.2.3\n", wantErr: "should be v2"},
+		{name: "invalid pseudo timestamp", content: "module example.com/service\ngo 1.23\nrequire example.com/a v0.0.0-20241302150405-abcdefabcdef\n", wantErr: "invalid pseudo-version"},
 		{name: "replace", content: "module example.com/service\ngo 1.23\nreplace example.com/a => ../a\n", wantErr: "replace directives are not supported"},
 		{name: "remote replace", content: "module example.com/service\ngo 1.23\nreplace example.com/a v1.0.0 => example.com/b v1.0.0\n", wantErr: "replace directives are not supported"},
 		{name: "exclude", content: "module example.com/service\ngo 1.23\nexclude example.com/a v1.0.0\n", wantErr: "exclude directives are not supported"},

@@ -58,7 +58,7 @@ func TestParseMetadataRejectsInvalidMetadata(t *testing.T) {
 		{name: "syntax", content: "module (\n", wantErr: "parse dependency go.mod"},
 		{name: "missing module", content: "go 1.22\n", wantErr: "requires a module directive"},
 		{name: "invalid module", content: "module dependency\n", wantErr: "malformed module path"},
-		{name: "noncanonical requirement", content: "module example.com/dependency\nrequire example.com/a v1.2\n", wantErr: "version must be canonical"},
+		{name: "noncanonical requirement", content: "module example.com/dependency\nrequire example.com/a v1.2\n", wantErr: "must be canonical"},
 		{name: "major mismatch", content: "module example.com/dependency\nrequire example.com/a/v2 v1.2.3\n", wantErr: "should be v2"},
 	}
 	for _, tt := range tests {
