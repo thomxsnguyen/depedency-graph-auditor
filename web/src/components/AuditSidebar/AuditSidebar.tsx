@@ -10,7 +10,7 @@ interface AuditSidebarProps {
   open: boolean
   onClose: () => void
   onSearch: (value: string) => void
-  onFilter: (name: "violationsOnly" | "directOnly", value: boolean) => void
+  onFilter: (name: "violationsOnly" | "completeGraph", value: boolean) => void
 }
 
 export function AuditSidebar({
@@ -73,10 +73,10 @@ export function AuditSidebar({
         <label>
           <input
             type="checkbox"
-            checked={filters.directOnly}
-            onChange={(event) => onFilter("directOnly", event.target.checked)}
+            checked={filters.completeGraph}
+            onChange={(event) => onFilter("completeGraph", event.target.checked)}
           />
-          Direct dependencies only
+          Entire dependency graph
         </label>
       </fieldset>
 

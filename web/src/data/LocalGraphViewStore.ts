@@ -3,7 +3,7 @@ import type { GraphView } from "../types/graphView"
 
 // Version the demo presentation state so incompatible viewport/layout changes
 // cannot strand the graph outside the visible canvas after an upgrade.
-const keyForAudit = (auditId: string) => `dependency-audit-view:v2:${auditId}`
+const keyForAudit = (auditId: string) => `dependency-audit-view:v3:${auditId}`
 
 export class LocalGraphViewStore implements GraphViewStore {
   async load(auditId: string): Promise<GraphView | null> {

@@ -17,7 +17,7 @@ describe("Classic page components", () => {
         packageCount={12}
         violationCount={1}
         counts={counts}
-        filters={{ search: "", violationsOnly: false, directOnly: false }}
+        filters={{ search: "", violationsOnly: false, completeGraph: false }}
         open
         onClose={vi.fn()}
         onSearch={onSearch}
@@ -27,8 +27,10 @@ describe("Classic page components", () => {
 
     await user.type(screen.getByRole("searchbox"), "vite")
     await user.click(screen.getByRole("checkbox", { name: "Violations only" }))
+    await user.click(screen.getByRole("checkbox", { name: "Entire dependency graph" }))
     expect(onSearch).toHaveBeenCalled()
     expect(onFilter).toHaveBeenCalledWith("violationsOnly", true)
+    expect(onFilter).toHaveBeenCalledWith("completeGraph", true)
   })
 
   it("saves a presentation note from the inspector", async () => {

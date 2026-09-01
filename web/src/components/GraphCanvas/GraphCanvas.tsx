@@ -64,8 +64,9 @@ function CanvasControls({ canUndo, canRedo, onUndo, onRedo, onResetLayout }: Pic
 
 function GraphCanvasInner(props: GraphCanvasProps) {
   const flow = useReactFlow()
-  const [layoutRevision, setLayoutRevision] = useState(0)
   const [layoutRequest, setLayoutRequest] = useState(0)
+  const initialViewportRef = useRef(props.view.viewport)
+  const completedInitialLayoutRef = useRef(false)
   const pinnedPositionsRef = useRef(props.view.pinnedPositions)
   useEffect(() => {
     pinnedPositionsRef.current = props.view.pinnedPositions
@@ -124,6 +125,7 @@ function GraphCanvasInner(props: GraphCanvasProps) {
 
   useEffect(() => {
     let active = true
+    let fitFrame: number | null = null
 
     layoutGraph(layoutNodes, layoutEdges)
       .then((positions) => {
@@ -132,7 +134,13 @@ function GraphCanvasInner(props: GraphCanvasProps) {
           ...node,
           position: pinnedPositionsRef.current[node.id] ?? positions[node.id] ?? node.position,
         })))
-        setLayoutRevision((revision) => revision + 1)
+        const shouldFit = completedInitialLayoutRef.current || initialViewportRef.current === null
+        completedInitialLayoutRef.current = true
+        if (shouldFit) {
+          fitFrame = window.requestAnimationFrame(() => {
+            flow.fitView({ padding: 0.2, duration: 220 })
+          })
+        }
       })
       .catch(() => {
         // The deterministic fallback positions remain usable if the worker fails.
@@ -140,20 +148,13 @@ function GraphCanvasInner(props: GraphCanvasProps) {
 
     return () => {
       active = false
+      if (fitFrame !== null) window.cancelAnimationFrame(fitFrame)
     }
-  }, [layoutEdges, layoutNodes, layoutRequest, setNodes])
-
-  useEffect(() => {
-    if (layoutRevision === 0 || props.view.viewport !== null) return
-    const fitFrame = window.requestAnimationFrame(() => {
-      flow.fitView({ padding: 0.2, duration: 220 })
-    })
-    return () => window.cancelAnimationFrame(fitFrame)
-  }, [flow, layoutRevision, props.view.viewport])
+  }, [flow, layoutEdges, layoutNodes, layoutRequest, setNodes])
 
   const hasActiveFilter = Boolean(
     props.view.filters.search.trim()
-    || props.view.filters.directOnly
+    || props.view.filters.completeGraph
     || props.view.filters.violationsOnly,
   )
 
@@ -177,7 +178,7 @@ function GraphCanvasInner(props: GraphCanvasProps) {
       onNodeDragStop={(_, node) => props.onPosition(node.id, node.position)}
       onMoveEnd={(_, viewport) => props.onViewport(viewport)}
       defaultViewport={props.view.viewport ?? { x: 0, y: 0, zoom: 1 }}
-      minZoom={0.25}
+      minZoom={nodes.length > 80 ? 0.05 : 0.25}
       maxZoom={1.8}
       nodesConnectable={false}
       deleteKeyCode={null}

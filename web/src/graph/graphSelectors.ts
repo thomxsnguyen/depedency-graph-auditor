@@ -73,7 +73,8 @@ export function visibleGraph(
   const packages = snapshot.packages.filter((packageRow) => {
     if (hidden.has(packageRow.id)) return false
     if (filters.violationsOnly && packageRow.verdict !== "policy_violation") return false
-    if (filters.directOnly && !direct.has(packageRow.id)) return false
+    const overviewOnly = !filters.completeGraph && !filters.violationsOnly && !normalizedSearch
+    if (overviewOnly && !direct.has(packageRow.id)) return false
     if (!normalizedSearch) return true
     return `${packageRow.name} ${packageRow.version}`.toLocaleLowerCase().includes(normalizedSearch)
   })

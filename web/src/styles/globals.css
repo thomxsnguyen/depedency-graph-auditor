@@ -287,7 +287,7 @@ label:has(input:focus-visible) {
 
 .status-dot--dead {
   background: var(--status-error);
-  border-radius: 2px;
+  border-radius: 0;
 }
 
 .status-indicator {
@@ -321,7 +321,7 @@ label:has(input:focus-visible) {
 
 .status-indicator--dead_lettered i,
 .status-indicator--violation i {
-  border-radius: 2px;
+  border-radius: 0;
   background: var(--status-error);
 }
 
@@ -395,7 +395,7 @@ label:has(input:focus-visible) {
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-1);
-  border-radius: 12px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: var(--shadow-node);
   backdrop-filter: saturate(140%) blur(16px);
@@ -512,7 +512,7 @@ label:has(input:focus-visible) {
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;

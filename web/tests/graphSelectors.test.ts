@@ -20,7 +20,7 @@ describe("graph selectors", () => {
     const before = structuredClone(snapshot)
     const visible = visibleGraph(
       snapshot,
-      { search: "", violationsOnly: true, directOnly: false },
+      { search: "", violationsOnly: true, completeGraph: false },
       [],
     )
 
@@ -32,7 +32,7 @@ describe("graph selectors", () => {
   it("collapses cyclic descendants without recursing forever", () => {
     const visible = visibleGraph(
       snapshot,
-      { search: "", violationsOnly: false, directOnly: false },
+      { search: "", violationsOnly: false, completeGraph: true },
       ["cycle-a@1.0.0"],
     )
 
@@ -40,14 +40,24 @@ describe("graph selectors", () => {
     expect(visible.packages.some((row) => row.id === "cycle-b@1.0.0")).toBe(false)
   })
 
-  it("keeps only root children in direct mode", () => {
+  it("keeps only root children in overview mode", () => {
     const visible = visibleGraph(
       snapshot,
-      { search: "", violationsOnly: false, directOnly: true },
+      { search: "", violationsOnly: false, completeGraph: false },
       [],
     )
 
     expect(visible.packages.some((row) => row.id === "vite@7.1.2")).toBe(true)
     expect(visible.packages.some((row) => row.id === "rollup@4.50.0")).toBe(false)
+  })
+
+  it("includes transitive packages in complete graph mode", () => {
+    const visible = visibleGraph(
+      snapshot,
+      { search: "", violationsOnly: false, completeGraph: true },
+      [],
+    )
+
+    expect(visible.packages.some((row) => row.id === "rollup@4.50.0")).toBe(true)
   })
 })

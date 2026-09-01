@@ -3,7 +3,7 @@ import type { Viewport } from "@xyflow/react"
 export interface GraphFilters {
   search: string
   violationsOnly: boolean
-  directOnly: boolean
+  completeGraph: boolean
 }
 
 export interface GraphPosition {
@@ -28,7 +28,7 @@ export const initialGraphView: GraphView = {
   filters: {
     search: "",
     violationsOnly: false,
-    directOnly: false,
+    completeGraph: false,
   },
   pinnedPositions: {},
   collapsedNodeIds: [],

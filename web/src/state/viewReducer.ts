@@ -5,7 +5,7 @@ export type ViewAction =
   | { type: "hydrate"; view: GraphView }
   | { type: "select"; nodeId: string | null }
   | { type: "search"; value: string }
-  | { type: "filter"; name: "violationsOnly" | "directOnly"; value: boolean }
+  | { type: "filter"; name: "violationsOnly" | "completeGraph"; value: boolean }
   | { type: "position"; nodeId: string; position: GraphPosition }
   | { type: "collapse"; nodeId: string }
   | { type: "annotate"; nodeId: string; text: string }
