@@ -26,7 +26,6 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
-	"github.com/thomxsnguyen/mini-distributed-job-api/internal/store"
 	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
 )
@@ -250,6 +249,11 @@ func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor
 }
 
 func runFileAnalysis(config cliConfig, shutdownTimeout time.Duration) (*filegraph.Report, error) {
+	githubClient := &githubsource.GitHubClient{Token: os.Getenv("GITHUB_TOKEN")}
+	return runFileAnalysisWithClient(config, shutdownTimeout, githubClient)
+}
+
+func runFileAnalysisWithClient(config cliConfig, shutdownTimeout time.Duration, githubClient *githubsource.GitHubClient) (*filegraph.Report, error) {
 	workCtx := context.Background()
 	signalCtx, stopSignals := signal.NotifyContext(
 		context.Background(),
@@ -258,28 +262,33 @@ func runFileAnalysis(config cliConfig, shutdownTimeout time.Duration) (*filegrap
 	)
 	defer stopSignals()
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		return nil, errors.New("DATABASE_URL is required (see .env.example)")
-	}
-	dbPool, err := pgxpool.New(workCtx, databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: open pool: %w", err)
-	}
-	defer dbPool.Close()
-	if err := dbPool.Ping(workCtx); err != nil {
-		return nil, fmt.Errorf("postgres: ping: %w", err)
+	sourceRoot := config.input
+	reportRoot := ""
+	if config.isGitHub {
+		temporaryDirectory, err := os.MkdirTemp("", "auditor-github-*")
+		if err != nil {
+			return nil, fmt.Errorf("create temporary GitHub repository directory: %w", err)
+		}
+		defer os.RemoveAll(temporaryDirectory)
+
+		archive, err := githubClient.FetchRepositoryZIP(workCtx, config.repository, config.ref)
+		if err != nil {
+			return nil, err
+		}
+		sourceRoot, err = githubsource.ExtractRepositoryZIP(archive, temporaryDirectory)
+		if err != nil {
+			return nil, err
+		}
+		reportRoot = config.repository.Name
 	}
 
-	jobStore := storepg.New(dbPool)
 	return executeFileAnalysis(
 		workCtx,
 		signalCtx,
-		config.input,
+		sourceRoot,
+		reportRoot,
 		config.outputPath,
 		shutdownTimeout,
-		jobStore,
-		dlq.New(jobStore),
 	)
 }
 
@@ -287,10 +296,9 @@ func executeFileAnalysis(
 	workCtx context.Context,
 	signalCtx context.Context,
 	root string,
+	reportRoot string,
 	outputPath string,
 	shutdownTimeout time.Duration,
-	durableStore store.Store,
-	deadLetters *dlq.DLQ,
 ) (*filegraph.Report, error) {
 	paths, index, err := filegraph.Discover(root)
 	if err != nil {
@@ -315,15 +323,8 @@ func executeFileAnalysis(
 		if len(paths) > bufferSize {
 			bufferSize = len(paths)
 		}
-		q := queue.New(bufferSize, durableStore)
-		options := make([]worker.Option, 0, 2)
-		if durableStore != nil {
-			options = append(options, worker.WithStore(durableStore))
-		}
-		if deadLetters != nil {
-			options = append(options, worker.WithDLQ(deadLetters))
-		}
-		pool := worker.NewWithOptions(10, q, handler, options...)
+		q := queue.New(bufferSize)
+		pool := worker.New(10, q, handler)
 		for _, path := range paths {
 			queued, err := filegraph.NewJob(absoluteRoot, path)
 			if err != nil {
@@ -347,7 +348,10 @@ func executeFileAnalysis(
 		}
 	}
 
-	report := filegraph.GenerateReport(filepath.Base(absoluteRoot), graphStore)
+	if reportRoot == "" {
+		reportRoot = filepath.Base(absoluteRoot)
+	}
+	report := filegraph.GenerateReport(reportRoot, graphStore)
 	if err := writeFileGraphReport(outputPath, report); err != nil {
 		return nil, err
 	}
@@ -414,11 +418,25 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		if !setOptions["output"] {
 			return cliConfig{}, errors.New("--output is required with --analysis files")
 		}
-		if setOptions["ecosystem"] || setOptions["ref"] || setOptions["manifest"] || setOptions["python-version"] || setOptions["python-platform"] {
-			return cliConfig{}, errors.New("--ecosystem, --ref, --manifest, and Python target options are not valid with --analysis files")
+		if setOptions["ecosystem"] || setOptions["manifest"] || setOptions["python-version"] || setOptions["python-platform"] {
+			return cliConfig{}, errors.New("--ecosystem, --manifest, and Python target options are not valid with --analysis files")
 		}
 		if strings.Contains(positional[0], "://") {
-			return cliConfig{}, errors.New("--analysis files requires a local project directory")
+			repository, err := githubsource.ParseRepositoryURL(positional[0])
+			if err != nil {
+				return cliConfig{}, err
+			}
+			return cliConfig{
+				input:      positional[0],
+				outputPath: *outputPath,
+				analysis:   *analysis,
+				ref:        *ref,
+				repository: repository,
+				isGitHub:   true,
+			}, nil
+		}
+		if setOptions["ref"] {
+			return cliConfig{}, errors.New("--ref is valid only with GitHub repository input")
 		}
 		return cliConfig{input: positional[0], outputPath: *outputPath, analysis: *analysis}, nil
 	}

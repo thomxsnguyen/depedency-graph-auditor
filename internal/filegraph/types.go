@@ -1,6 +1,6 @@
 package filegraph
 
-// Node is one JavaScript or TypeScript source file in the project.
+// Node is one supported source file in the project.
 type Node struct {
 	Path string `json:"path"`
 }

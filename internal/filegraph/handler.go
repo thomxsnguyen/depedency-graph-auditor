@@ -76,6 +76,31 @@ func (h *Handler) Handle(_ context.Context, queued job.Job) ([]job.Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("filegraph: read %q: %w", relativePath, err)
 	}
+	if filepath.Ext(relativePath) == ".py" {
+		imports, err := ExtractPythonImports(source)
+		if err != nil {
+			h.store.AddDiagnostic(Diagnostic{Path: relativePath, Message: err.Error()})
+			return nil, nil
+		}
+		for _, imported := range imports {
+			resolved, local := ResolvePython(h.index, relativePath, imported)
+			if len(resolved) == 0 {
+				if local {
+					h.store.AddDiagnostic(Diagnostic{
+						Path:    relativePath,
+						Import:  imported.String(),
+						Message: "unresolved local import",
+					})
+				}
+				continue
+			}
+			for _, target := range resolved {
+				h.store.AddEdge(Edge{From: relativePath, To: target})
+			}
+		}
+		return nil, nil
+	}
+
 	imports, err := ExtractImports(source)
 	if err != nil {
 		h.store.AddDiagnostic(Diagnostic{Path: relativePath, Message: err.Error()})

@@ -1,0 +1,369 @@
+{
+  "root": "mini-distributed-job-api",
+  "nodes": [
+    {
+      "path": "web/eslint.config.js"
+    },
+    {
+      "path": "web/playwright.config.ts"
+    },
+    {
+      "path": "web/src/app/App.tsx"
+    },
+    {
+      "path": "web/src/app/AuditWorkspace.tsx"
+    },
+    {
+      "path": "web/src/components/AuditSidebar/AuditSidebar.tsx"
+    },
+    {
+      "path": "web/src/components/GraphCanvas/CanvasBoxNode.tsx"
+    },
+    {
+      "path": "web/src/components/GraphCanvas/GraphCanvas.tsx"
+    },
+    {
+      "path": "web/src/components/GraphCanvas/PackageNode.tsx"
+    },
+    {
+      "path": "web/src/components/NodeInspector/NodeInspector.tsx"
+    },
+    {
+      "path": "web/src/components/QueueStrip/QueueStrip.tsx"
+    },
+    {
+      "path": "web/src/components/TopBar/TopBar.tsx"
+    },
+    {
+      "path": "web/src/components/primitives/StatusIndicator.tsx"
+    },
+    {
+      "path": "web/src/data/AuditDataSource.ts"
+    },
+    {
+      "path": "web/src/data/FixtureAuditDataSource.ts"
+    },
+    {
+      "path": "web/src/data/GraphViewStore.ts"
+    },
+    {
+      "path": "web/src/data/LocalGraphViewStore.ts"
+    },
+    {
+      "path": "web/src/graph/graphSelectors.ts"
+    },
+    {
+      "path": "web/src/graph/layoutGraph.ts"
+    },
+    {
+      "path": "web/src/graph/mapAuditGraph.ts"
+    },
+    {
+      "path": "web/src/main.tsx"
+    },
+    {
+      "path": "web/src/state/auditReducer.ts"
+    },
+    {
+      "path": "web/src/state/historyReducer.ts"
+    },
+    {
+      "path": "web/src/state/viewReducer.ts"
+    },
+    {
+      "path": "web/src/types/audit.ts"
+    },
+    {
+      "path": "web/src/types/graphView.ts"
+    },
+    {
+      "path": "web/src/vite-env.d.ts"
+    },
+    {
+      "path": "web/tests/LocalGraphViewStore.test.ts"
+    },
+    {
+      "path": "web/tests/auditReducer.test.ts"
+    },
+    {
+      "path": "web/tests/browser/audit-studio.spec.ts"
+    },
+    {
+      "path": "web/tests/components.test.tsx"
+    },
+    {
+      "path": "web/tests/graphSelectors.test.ts"
+    },
+    {
+      "path": "web/tests/setup.ts"
+    },
+    {
+      "path": "web/tests/viewState.test.ts"
+    },
+    {
+      "path": "web/vite.config.ts"
+    }
+  ],
+  "edges": [
+    {
+      "from": "web/src/app/App.tsx",
+      "to": "web/src/app/AuditWorkspace.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/components/AuditSidebar/AuditSidebar.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/components/GraphCanvas/GraphCanvas.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/components/NodeInspector/NodeInspector.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/components/QueueStrip/QueueStrip.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/components/TopBar/TopBar.tsx"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/data/FixtureAuditDataSource.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/data/LocalGraphViewStore.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/graph/graphSelectors.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/state/auditReducer.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/state/historyReducer.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/state/viewReducer.ts"
+    },
+    {
+      "from": "web/src/app/AuditWorkspace.tsx",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/components/AuditSidebar/AuditSidebar.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/components/AuditSidebar/AuditSidebar.tsx",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/components/GraphCanvas/CanvasBoxNode.tsx"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/components/GraphCanvas/PackageNode.tsx"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/graph/graphSelectors.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/graph/layoutGraph.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/graph/mapAuditGraph.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/state/viewReducer.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/GraphCanvas.tsx",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/PackageNode.tsx",
+      "to": "web/src/components/primitives/StatusIndicator.tsx"
+    },
+    {
+      "from": "web/src/components/GraphCanvas/PackageNode.tsx",
+      "to": "web/src/graph/mapAuditGraph.ts"
+    },
+    {
+      "from": "web/src/components/NodeInspector/NodeInspector.tsx",
+      "to": "web/src/components/primitives/StatusIndicator.tsx"
+    },
+    {
+      "from": "web/src/components/NodeInspector/NodeInspector.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/components/QueueStrip/QueueStrip.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/components/primitives/StatusIndicator.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/data/AuditDataSource.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/data/FixtureAuditDataSource.ts",
+      "to": "web/src/data/AuditDataSource.ts"
+    },
+    {
+      "from": "web/src/data/FixtureAuditDataSource.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/data/GraphViewStore.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/data/LocalGraphViewStore.ts",
+      "to": "web/src/data/GraphViewStore.ts"
+    },
+    {
+      "from": "web/src/data/LocalGraphViewStore.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/graph/graphSelectors.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/graph/graphSelectors.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/graph/layoutGraph.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/graph/mapAuditGraph.ts",
+      "to": "web/src/graph/graphSelectors.ts"
+    },
+    {
+      "from": "web/src/graph/mapAuditGraph.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/graph/mapAuditGraph.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/src/main.tsx",
+      "to": "web/src/app/App.tsx"
+    },
+    {
+      "from": "web/src/state/auditReducer.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/src/state/viewReducer.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/tests/LocalGraphViewStore.test.ts",
+      "to": "web/src/data/LocalGraphViewStore.ts"
+    },
+    {
+      "from": "web/tests/LocalGraphViewStore.test.ts",
+      "to": "web/src/types/graphView.ts"
+    },
+    {
+      "from": "web/tests/auditReducer.test.ts",
+      "to": "web/src/state/auditReducer.ts"
+    },
+    {
+      "from": "web/tests/auditReducer.test.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/tests/components.test.tsx",
+      "to": "web/src/components/AuditSidebar/AuditSidebar.tsx"
+    },
+    {
+      "from": "web/tests/components.test.tsx",
+      "to": "web/src/components/NodeInspector/NodeInspector.tsx"
+    },
+    {
+      "from": "web/tests/components.test.tsx",
+      "to": "web/src/components/QueueStrip/QueueStrip.tsx"
+    },
+    {
+      "from": "web/tests/components.test.tsx",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/tests/graphSelectors.test.ts",
+      "to": "web/src/graph/graphSelectors.ts"
+    },
+    {
+      "from": "web/tests/graphSelectors.test.ts",
+      "to": "web/src/types/audit.ts"
+    },
+    {
+      "from": "web/tests/viewState.test.ts",
+      "to": "web/src/state/historyReducer.ts"
+    },
+    {
+      "from": "web/tests/viewState.test.ts",
+      "to": "web/src/state/viewReducer.ts"
+    },
+    {
+      "from": "web/tests/viewState.test.ts",
+      "to": "web/src/types/graphView.ts"
+    }
+  ],
+  "diagnostics": [
+    {
+      "path": "web/src/data/FixtureAuditDataSource.ts",
+      "import": "./complete-audit.json",
+      "message": "unresolved local import"
+    },
+    {
+      "path": "web/src/main.tsx",
+      "import": "./styles/globals.css",
+      "message": "unresolved local import"
+    },
+    {
+      "path": "web/src/main.tsx",
+      "import": "./styles/motion.css",
+      "message": "unresolved local import"
+    },
+    {
+      "path": "web/src/main.tsx",
+      "import": "./styles/tokens.css",
+      "message": "unresolved local import"
+    },
+    {
+      "path": "web/tests/auditReducer.test.ts",
+      "import": "../src/data/sample-audit.json",
+      "message": "unresolved local import"
+    },
+    {
+      "path": "web/tests/graphSelectors.test.ts",
+      "import": "../src/data/sample-audit.json",
+      "message": "unresolved local import"
+    }
+  ]
+}

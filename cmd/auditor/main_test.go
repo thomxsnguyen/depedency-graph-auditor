@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -64,6 +65,22 @@ func TestParseCLIArgs(t *testing.T) {
 			want: cliConfig{input: "personal-portfolio", outputPath: "file-graph.json", analysis: "files"},
 		},
 		{
+			name: "GitHub file analysis",
+			args: []string{"--analysis", "files", "--output", "file-graph.json", "https://github.com/acme/widget"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget", outputPath: "file-graph.json", analysis: "files",
+				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
+		{
+			name: "GitHub file analysis with ref",
+			args: []string{"--analysis", "files", "--output", "file-graph.json", "--ref", "development", "https://github.com/acme/widget"},
+			want: cliConfig{
+				input: "https://github.com/acme/widget", outputPath: "file-graph.json", analysis: "files", ref: "development",
+				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
+			},
+		},
+		{
 			name: "GitHub input with options",
 			args: []string{"--ref", "development", "--manifest", "packages/web/package.json", "https://github.com/acme/widget.git/"},
 			want: cliConfig{
@@ -122,7 +139,6 @@ func TestParseCLIArgs(t *testing.T) {
 		{name: "invalid ecosystem", args: []string{"--ecosystem", "ruby", "package.json"}, wantErr: "npm, python, or go"},
 		{name: "invalid analysis", args: []string{"--analysis", "symbols", "package.json"}, wantErr: "packages or files"},
 		{name: "file analysis requires output", args: []string{"--analysis", "files", "project"}, wantErr: "--output is required"},
-		{name: "file analysis rejects GitHub", args: []string{"--analysis", "files", "--output", "graph.json", "https://github.com/acme/widget"}, wantErr: "local project directory"},
 		{name: "file analysis rejects ecosystem", args: []string{"--analysis", "files", "--ecosystem", "npm", "--output", "graph.json", "project"}, wantErr: "not valid"},
 		{name: "Python option with npm", args: []string{"--python-version", "3.11", "package.json"}, wantErr: "valid only"},
 		{name: "Python option with Go", args: []string{"--ecosystem", "go", "--python-version", "3.11", "go.mod"}, wantErr: "valid only with --ecosystem python"},
@@ -178,10 +194,9 @@ func TestExecuteFileAnalysisUsesQueueAndProducesCompleteGraph(t *testing.T) {
 		context.Background(),
 		context.Background(),
 		root,
+		"",
 		firstOutput,
 		time.Second,
-		nil,
-		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -209,10 +224,9 @@ func TestExecuteFileAnalysisUsesQueueAndProducesCompleteGraph(t *testing.T) {
 		context.Background(),
 		context.Background(),
 		root,
+		"",
 		secondOutput,
 		time.Second,
-		nil,
-		nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +242,7 @@ func TestExecuteFileAnalysisUsesQueueAndProducesCompleteGraph(t *testing.T) {
 func TestExecuteFileAnalysisHandlesEmptyProject(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "file-graph.json")
 	report, err := executeFileAnalysis(
-		context.Background(), context.Background(), t.TempDir(), output, time.Second, nil, nil,
+		context.Background(), context.Background(), t.TempDir(), "", output, time.Second,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -239,6 +253,72 @@ func TestExecuteFileAnalysisHandlesEmptyProject(t *testing.T) {
 	if _, err := os.Stat(output); err != nil {
 		t.Fatalf("output was not written: %v", err)
 	}
+}
+
+func TestRunGitHubPythonFileAnalysis(t *testing.T) {
+	archive := repositoryZIP(t, map[string]string{
+		"acme-widget/src/widget/__init__.py": "",
+		"acme-widget/src/widget/main.py":     "from widget import models\nimport requests\n",
+		"acme-widget/src/widget/models.py":   "class Model:\n    pass\n",
+		"acme-widget/tests/test_models.py":   "from widget.models import Model\n",
+		"acme-widget/.venv/ignored.py":       "from widget import models\n",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/repos/acme/widget/zipball" {
+			t.Errorf("path: got %q", request.URL.Path)
+		}
+		writer.Header().Set("Content-Type", "application/zip")
+		_, _ = writer.Write(archive)
+	}))
+	defer server.Close()
+
+	t.Setenv("DATABASE_URL", "")
+	output := filepath.Join(t.TempDir(), "file-graph.json")
+	report, err := runFileAnalysisWithClient(cliConfig{
+		input:      "https://github.com/acme/widget",
+		outputPath: output,
+		analysis:   "files",
+		repository: githubsource.Repository{Owner: "acme", Name: "widget"},
+		isGitHub:   true,
+	}, time.Second, &githubsource.GitHubClient{HTTPClient: server.Client(), BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Root != "widget" || len(report.Nodes) != 4 {
+		t.Fatalf("report root/nodes: %+v", report)
+	}
+	wantEdges := []filegraph.Edge{
+		{From: "src/widget/main.py", To: "src/widget/models.py"},
+		{From: "tests/test_models.py", To: "src/widget/models.py"},
+	}
+	if !reflect.DeepEqual(report.Edges, wantEdges) {
+		t.Fatalf("edges: got %+v, want %+v", report.Edges, wantEdges)
+	}
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics: %+v", report.Diagnostics)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("output was not written: %v", err)
+	}
+}
+
+func repositoryZIP(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for path, contents := range files {
+		file, err := writer.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }
 
 func writeProjectFile(t *testing.T, root, relative, contents string) {

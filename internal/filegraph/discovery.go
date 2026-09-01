@@ -13,11 +13,18 @@ import (
 type Index map[string]struct{}
 
 var excludedDirectories = map[string]struct{}{
-	".git":         {},
-	"node_modules": {},
-	"dist":         {},
-	"build":        {},
-	"coverage":     {},
+	".git":          {},
+	".mypy_cache":   {},
+	".pytest_cache": {},
+	".ruff_cache":   {},
+	".venv":         {},
+	"__pycache__":   {},
+	"build":         {},
+	"coverage":      {},
+	"dist":          {},
+	"node_modules":  {},
+	"site-packages": {},
+	"venv":          {},
 }
 
 // Discover finds supported source files beneath root and returns a stable list
@@ -80,7 +87,7 @@ func Discover(root string) ([]string, Index, error) {
 
 func supportedExtension(extension string) bool {
 	switch strings.ToLower(extension) {
-	case ".js", ".jsx", ".ts", ".tsx":
+	case ".js", ".jsx", ".ts", ".tsx", ".py":
 		return true
 	default:
 		return false

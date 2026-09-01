@@ -69,6 +69,43 @@ func TestHandlerRecordsExtractionFailuresWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestHandlerRecordsPythonFileEdgesAndIgnoresExternalImports(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "src/pc_diagnostic/__init__.py", "")
+	writeFixture(t, root, "src/pc_diagnostic/main.py", `
+from pc_diagnostic.models import Snapshot
+from pc_diagnostic.missing import Missing
+import psutil
+`)
+	writeFixture(t, root, "src/pc_diagnostic/models.py", "")
+	paths, index, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore()
+	for _, path := range paths {
+		store.AddNode(Node{Path: path})
+	}
+	handler, err := NewHandler(root, index, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absoluteRoot, _ := filepath.Abs(root)
+	queued, _ := NewJob(absoluteRoot, "src/pc_diagnostic/main.py")
+	if _, err := handler.Handle(context.Background(), queued); err != nil {
+		t.Fatal(err)
+	}
+
+	edges := store.Edges()
+	if len(edges) != 1 || edges[0] != (Edge{From: "src/pc_diagnostic/main.py", To: "src/pc_diagnostic/models.py"}) {
+		t.Fatalf("edges: %+v", edges)
+	}
+	diagnostics := store.Diagnostics()
+	if len(diagnostics) != 1 || diagnostics[0].Import != "pc_diagnostic.missing" {
+		t.Fatalf("diagnostics: %+v", diagnostics)
+	}
+}
+
 func TestHandlerRejectsInvalidJobsAndPaths(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "src/App.ts", "")

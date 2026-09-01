@@ -12,18 +12,25 @@ func TestDiscoverFiltersAndSortsSourceFiles(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, root, "src/z.js", "")
 	writeFixture(t, root, "src/a.tsx", "")
+	writeFixture(t, root, "src/python.py", "")
 	writeFixture(t, root, "src/readme.md", "")
 	writeFixture(t, root, "node_modules/package/index.js", "")
 	writeFixture(t, root, "dist/output.js", "")
 	writeFixture(t, root, "build/output.js", "")
 	writeFixture(t, root, "coverage/output.js", "")
 	writeFixture(t, root, ".git/hooks/test.js", "")
+	writeFixture(t, root, ".venv/lib/site-packages/dependency.py", "")
+	writeFixture(t, root, "venv/dependency.py", "")
+	writeFixture(t, root, "src/__pycache__/cached.py", "")
+	writeFixture(t, root, ".pytest_cache/cached.py", "")
+	writeFixture(t, root, ".mypy_cache/cached.py", "")
+	writeFixture(t, root, ".ruff_cache/cached.py", "")
 
 	paths, index, err := Discover(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"src/a.tsx", "src/z.js"}
+	want := []string{"src/a.tsx", "src/python.py", "src/z.js"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths: got %v, want %v", paths, want)
 	}
