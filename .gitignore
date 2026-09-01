@@ -6,3 +6,10 @@ testdata/mock-package.json
 
 # Local UI and deployment planning documents
 docs/ui-and-deployment/
+
+# Frontend dependencies, builds, and test artifacts
+web/node_modules/
+web/dist/
+web/coverage/
+web/test-results/
+web/playwright-report/

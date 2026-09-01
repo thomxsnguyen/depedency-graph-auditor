@@ -1,0 +1,40 @@
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  color: #1d1d1f;
+  background: #f5f5f7;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  --canvas: #f5f5f7;
+  --surface: #ffffff;
+  --surface-subtle: #fafafc;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #86868b;
+  --divider: rgba(0, 0, 0, 0.07);
+  --accent: #0071e3;
+  --accent-hover: #0068d1;
+  --status-pass: #248a3d;
+  --status-warning: #9a6700;
+  --status-error: #c9342f;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --radius-control: 8px;
+  --radius-node: 12px;
+  --radius-panel: 16px;
+  --radius-pill: 999px;
+
+  --shadow-node: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.05);
+  --shadow-floating: 0 2px 8px rgba(0, 0, 0, 0.08), 0 24px 64px rgba(0, 0, 0, 0.14);
+  --focus-ring: 0 0 0 3px rgba(0, 113, 227, 0.22);
+  --ease-out: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+}

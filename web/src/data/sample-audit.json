@@ -1,0 +1,37 @@
+{
+  "auditId": "classic-demo",
+  "root": "personal-portfolio",
+  "source": "package.json · local demo",
+  "reportUrl": "/sample-audit-report.md",
+  "packages": [
+    { "id": "react@19.1.0", "name": "react", "version": "19.1.0", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "react-dom@19.1.0", "name": "react-dom", "version": "19.1.0", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "scheduler@0.26.0", "name": "scheduler", "version": "0.26.0", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "vite@7.1.2", "name": "vite", "version": "7.1.2", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "esbuild@0.25.9", "name": "esbuild", "version": "0.25.9", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "rollup@4.50.0", "name": "rollup", "version": "4.50.0", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "picomatch@4.0.3", "name": "picomatch", "version": "4.0.3", "license": "MIT", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "legacy-widget@1.4.0", "name": "legacy-widget", "version": "1.4.0", "license": "GPL-3.0", "verdict": "policy_violation", "status": "completed", "attempts": 1 },
+    { "id": "unstable-parser@2.0.1", "name": "unstable-parser", "version": "2.0.1", "license": "Apache-2.0", "verdict": "pass", "status": "retrying", "attempts": 2, "latestError": "Registry returned 503; retry scheduled" },
+    { "id": "missing-metadata@0.8.0", "name": "missing-metadata", "version": "0.8.0", "license": "UNKNOWN", "verdict": "unresolvable", "status": "dead_lettered", "attempts": 5, "latestError": "Package metadata could not be resolved" },
+    { "id": "cycle-a@1.0.0", "name": "cycle-a", "version": "1.0.0", "license": "ISC", "verdict": "pass", "status": "completed", "attempts": 1 },
+    { "id": "cycle-b@1.0.0", "name": "cycle-b", "version": "1.0.0", "license": "ISC", "verdict": "pass", "status": "completed", "attempts": 1 }
+  ],
+  "edges": [
+    { "id": "root-react", "from": "root", "to": "react@19.1.0" },
+    { "id": "root-react-dom", "from": "root", "to": "react-dom@19.1.0" },
+    { "id": "root-vite", "from": "root", "to": "vite@7.1.2" },
+    { "id": "root-legacy", "from": "root", "to": "legacy-widget@1.4.0" },
+    { "id": "root-unstable", "from": "root", "to": "unstable-parser@2.0.1" },
+    { "id": "root-missing", "from": "root", "to": "missing-metadata@0.8.0" },
+    { "id": "root-cycle", "from": "root", "to": "cycle-a@1.0.0" },
+    { "id": "react-scheduler", "from": "react@19.1.0", "to": "scheduler@0.26.0" },
+    { "id": "react-dom-react", "from": "react-dom@19.1.0", "to": "react@19.1.0" },
+    { "id": "react-dom-scheduler", "from": "react-dom@19.1.0", "to": "scheduler@0.26.0" },
+    { "id": "vite-esbuild", "from": "vite@7.1.2", "to": "esbuild@0.25.9" },
+    { "id": "vite-rollup", "from": "vite@7.1.2", "to": "rollup@4.50.0" },
+    { "id": "rollup-picomatch", "from": "rollup@4.50.0", "to": "picomatch@4.0.3" },
+    { "id": "cycle-a-b", "from": "cycle-a@1.0.0", "to": "cycle-b@1.0.0" },
+    { "id": "cycle-b-a", "from": "cycle-b@1.0.0", "to": "cycle-a@1.0.0" }
+  ]
+}
