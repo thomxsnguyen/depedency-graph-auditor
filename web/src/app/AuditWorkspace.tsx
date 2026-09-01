@@ -196,6 +196,7 @@ export function AuditWorkspace() {
           onCollapse={(nodeId) => applyView({ type: "collapse", nodeId })}
           onPosition={positionNode}
           onViewport={saveViewport}
+          onViewAction={applyView}
           onUndo={() => viewDispatch({ type: "undo" })}
           onRedo={() => viewDispatch({ type: "redo" })}
           onResetLayout={() => applyView({ type: "reset-layout" })}

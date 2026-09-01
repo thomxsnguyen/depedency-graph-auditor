@@ -406,6 +406,30 @@ label:has(input:focus-visible) {
   width: 40px;
 }
 
+.graph-toolbar .icon-button[aria-pressed="true"] {
+  background: rgba(0, 113, 227, 0.1);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.22);
+}
+
+.placement-hint {
+  position: absolute;
+  z-index: 5;
+  top: 76px;
+  left: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--shadow-node);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.graph-flow--placing .react-flow__pane {
+  cursor: crosshair;
+}
+
 .toolbar-divider {
   width: 1px;
   height: 22px;
@@ -532,6 +556,85 @@ label:has(input:focus-visible) {
   height: 7px !important;
   border: 2px solid var(--surface) !important;
   background: var(--text-tertiary) !important;
+}
+
+.canvas-box {
+  position: relative;
+  display: grid;
+  width: 180px;
+  min-height: 64px;
+  padding: var(--space-3);
+  align-items: center;
+  background: var(--surface-subtle);
+  box-shadow: var(--shadow-node);
+  color: var(--text-primary);
+  cursor: grab;
+}
+
+.canvas-box:active {
+  cursor: grabbing;
+}
+
+.canvas-box--selected,
+.react-flow__node:focus-visible .canvas-box {
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow-node);
+}
+
+.canvas-box__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  outline: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 550;
+  text-align: left;
+}
+
+.canvas-box__label:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.canvas-box__input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  border: 1px solid rgba(0, 113, 227, 0.35);
+  border-radius: 0;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.canvas-box__handle {
+  width: 10px !important;
+  height: 10px !important;
+  border: 2px solid var(--surface) !important;
+  border-radius: 0 !important;
+  background: var(--accent) !important;
+}
+
+.canvas-box__handle:hover {
+  transform: scale(1.15);
+}
+
+.canvas-arrow .react-flow__edge-path {
+  stroke: rgba(29, 29, 31, 0.52);
+  stroke-width: 1.6;
+}
+
+.canvas-arrow.selected .react-flow__edge-path,
+.react-flow__edge.selected.canvas-arrow .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 1.6;
 }
 
 .dependency-edge .react-flow__edge-path {

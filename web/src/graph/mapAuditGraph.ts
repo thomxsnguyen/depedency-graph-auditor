@@ -51,6 +51,8 @@ export function mapAuditGraph(
       draggable: true,
       selectable: true,
       focusable: true,
+      connectable: false,
+      deletable: false,
       ariaLabel: packageRow
         ? `${packageRow.name} version ${packageRow.version}, ${packageRow.status.replaceAll("_", " ")}`
         : `${snapshot.root}, audit root`,
@@ -68,6 +70,7 @@ export function mapAuditGraph(
       className: selected ? "dependency-edge dependency-edge--selected" : "dependency-edge",
       animated: false,
       focusable: false,
+      deletable: false,
     }
   })
 

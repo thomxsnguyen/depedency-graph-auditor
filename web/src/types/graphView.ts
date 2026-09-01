@@ -11,12 +11,26 @@ export interface GraphPosition {
   y: number
 }
 
+export interface CanvasBox {
+  id: string
+  label: string
+  position: GraphPosition
+}
+
+export interface CanvasArrow {
+  id: string
+  sourceBoxId: string
+  targetBoxId: string
+}
+
 export interface GraphView {
   selectedNodeId: string | null
   filters: GraphFilters
   pinnedPositions: Record<string, GraphPosition>
   collapsedNodeIds: string[]
   annotations: Record<string, string>
+  canvasBoxes: CanvasBox[]
+  canvasArrows: CanvasArrow[]
   viewport: Viewport | null
   summaryOpen: boolean
   inspectorOpen: boolean
@@ -33,6 +47,8 @@ export const initialGraphView: GraphView = {
   pinnedPositions: {},
   collapsedNodeIds: [],
   annotations: {},
+  canvasBoxes: [],
+  canvasArrows: [],
   viewport: null,
   summaryOpen: false,
   inspectorOpen: false,
