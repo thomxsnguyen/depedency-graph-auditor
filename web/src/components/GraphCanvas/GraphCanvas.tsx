@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Focus, Redo2, RotateCcw, Undo2, ZoomIn, ZoomOut } from "lucide-react"
 import {
   MiniMap,
@@ -64,6 +64,12 @@ function CanvasControls({ canUndo, canRedo, onUndo, onRedo, onResetLayout }: Pic
 
 function GraphCanvasInner(props: GraphCanvasProps) {
   const flow = useReactFlow()
+  const [layoutRevision, setLayoutRevision] = useState(0)
+  const [layoutRequest, setLayoutRequest] = useState(0)
+  const pinnedPositionsRef = useRef(props.view.pinnedPositions)
+  useEffect(() => {
+    pinnedPositionsRef.current = props.view.pinnedPositions
+  }, [props.view.pinnedPositions])
   const visible = useMemo(
     () => visibleGraph(props.snapshot, props.view.filters, props.view.collapsedNodeIds),
     [props.snapshot, props.view.filters, props.view.collapsedNodeIds],
@@ -96,28 +102,37 @@ function GraphCanvasInner(props: GraphCanvasProps) {
   )
   const [nodes, setNodes, onNodesChange] = useNodesState<AuditGraphNode>(interactiveNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(mapped.edges)
+  const layoutNodes = useMemo(
+    () => [{ id: "root" }, ...visible.packages.map((packageRow) => ({ id: packageRow.id }))],
+    [visible.packages],
+  )
+  const layoutEdges = useMemo(
+    () => visible.edges.map((edge) => ({ id: edge.id, source: edge.from, target: edge.to })),
+    [visible.edges],
+  )
+
+  useEffect(() => {
+    setEdges(mapped.edges)
+    setNodes((currentNodes) => {
+      const currentPositions = new Map(currentNodes.map((node) => [node.id, node.position]))
+      return interactiveNodes.map((node) => ({
+        ...node,
+        position: props.view.pinnedPositions[node.id] ?? currentPositions.get(node.id) ?? node.position,
+      }))
+    })
+  }, [interactiveNodes, mapped.edges, props.view.pinnedPositions, setEdges, setNodes])
 
   useEffect(() => {
     let active = true
-    let fitFrame: number | null = null
-    const shouldFitAfterLayout = props.view.viewport === null
-    setEdges(mapped.edges)
-    setNodes(interactiveNodes)
 
-    layoutGraph(interactiveNodes, mapped.edges)
+    layoutGraph(layoutNodes, layoutEdges)
       .then((positions) => {
         if (!active) return
-        const positionedNodes = interactiveNodes.map((node) => ({
+        setNodes((currentNodes) => currentNodes.map((node) => ({
           ...node,
-          position: props.view.pinnedPositions[node.id] ?? positions[node.id] ?? node.position,
-        }))
-        setNodes(positionedNodes)
-
-        if (shouldFitAfterLayout) {
-          fitFrame = window.requestAnimationFrame(() => {
-            flow.fitView({ nodes: positionedNodes, padding: 0.2, duration: 220 })
-          })
-        }
+          position: pinnedPositionsRef.current[node.id] ?? positions[node.id] ?? node.position,
+        })))
+        setLayoutRevision((revision) => revision + 1)
       })
       .catch(() => {
         // The deterministic fallback positions remain usable if the worker fails.
@@ -125,9 +140,16 @@ function GraphCanvasInner(props: GraphCanvasProps) {
 
     return () => {
       active = false
-      if (fitFrame !== null) window.cancelAnimationFrame(fitFrame)
     }
-  }, [flow, interactiveNodes, mapped.edges, props.view.pinnedPositions, props.view.viewport, setEdges, setNodes])
+  }, [layoutEdges, layoutNodes, layoutRequest, setNodes])
+
+  useEffect(() => {
+    if (layoutRevision === 0 || props.view.viewport !== null) return
+    const fitFrame = window.requestAnimationFrame(() => {
+      flow.fitView({ padding: 0.2, duration: 220 })
+    })
+    return () => window.cancelAnimationFrame(fitFrame)
+  }, [flow, layoutRevision, props.view.viewport])
 
   const hasActiveFilter = Boolean(
     props.view.filters.search.trim()
@@ -155,14 +177,11 @@ function GraphCanvasInner(props: GraphCanvasProps) {
       onNodeDragStop={(_, node) => props.onPosition(node.id, node.position)}
       onMoveEnd={(_, viewport) => props.onViewport(viewport)}
       defaultViewport={props.view.viewport ?? { x: 0, y: 0, zoom: 1 }}
-      fitView={!props.view.viewport}
-      fitViewOptions={{ padding: 0.2 }}
       minZoom={0.25}
       maxZoom={1.8}
       nodesConnectable={false}
       deleteKeyCode={null}
       selectionOnDrag={false}
-      onlyRenderVisibleElements
       aria-label="Interactive dependency graph"
     >
       <CanvasControls
@@ -170,7 +189,10 @@ function GraphCanvasInner(props: GraphCanvasProps) {
         canRedo={props.canRedo}
         onUndo={props.onUndo}
         onRedo={props.onRedo}
-        onResetLayout={props.onResetLayout}
+        onResetLayout={() => {
+          props.onResetLayout()
+          setLayoutRequest((request) => request + 1)
+        }}
       />
       <MiniMap
         className="graph-minimap"

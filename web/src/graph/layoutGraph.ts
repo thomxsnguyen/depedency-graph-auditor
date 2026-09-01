@@ -1,4 +1,3 @@
-import type { Edge, Node } from "@xyflow/react"
 import ELK from "elkjs/lib/elk-api.js"
 import ElkWorker from "elkjs/lib/elk-worker.min.js?worker"
 import type { GraphPosition } from "../types/graphView"
@@ -7,9 +6,9 @@ const elk = new ELK({
   workerFactory: () => new ElkWorker(),
 })
 
-export function layoutGraph<T extends Record<string, unknown>>(
-  nodes: readonly Node<T>[],
-  edges: readonly Edge[],
+export function layoutGraph(
+  nodes: readonly { id: string }[],
+  edges: readonly { id: string; source: string; target: string }[],
 ): Promise<Record<string, GraphPosition>> {
   if (nodes.length === 0) return Promise.resolve({})
 
