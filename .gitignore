@@ -3,3 +3,6 @@
 
 # Local auditor smoke-test fixture
 testdata/mock-package.json
+
+# Local UI and deployment planning documents
+docs/ui-and-deployment/
