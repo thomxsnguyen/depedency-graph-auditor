@@ -20,11 +20,13 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/queue"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/store"
 	storepg "github.com/thomxsnguyen/mini-distributed-job-api/internal/store/postgres"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/worker"
 )
@@ -34,6 +36,7 @@ const defaultShutdownTimeout = 30 * time.Second
 type cliConfig struct {
 	input        string
 	outputPath   string
+	analysis     string
 	ecosystem    string
 	ref          string
 	manifestPath string
@@ -57,12 +60,20 @@ func main() {
 	config, err := parseCLIArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "configuration: %v\n", err)
-		fmt.Fprintln(os.Stderr, "usage: auditor [--ecosystem <npm|python|go>] [--output <path>] [--ref <value>] [--manifest <path>] <manifest-path-or-github-url>")
+		fmt.Fprintln(os.Stderr, "usage: auditor [--analysis <packages|files>] [--ecosystem <npm|python|go>] [--output <path>] [--ref <value>] [--manifest <path>] <manifest-path-or-project-directory-or-github-url>")
 		os.Exit(1)
 	}
 	shutdownTimeout, err := shutdownTimeoutFromEnv()
 	if err != nil {
 		log.Fatalf("configuration: %v", err)
+	}
+	if config.analysis == "files" {
+		report, err := runFileAnalysis(config, shutdownTimeout)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("File dependency graph: %d files, %d imports, %d diagnostics\n", len(report.Nodes), len(report.Edges), len(report.Diagnostics))
+		return
 	}
 
 	// 2. Read and parse the manifest before opening PostgreSQL.
@@ -238,10 +249,127 @@ func finalizeAudit(shutdownErr error, outputPath, root string, packages *auditor
 	return report, nil
 }
 
+func runFileAnalysis(config cliConfig, shutdownTimeout time.Duration) (*filegraph.Report, error) {
+	workCtx := context.Background()
+	signalCtx, stopSignals := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stopSignals()
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		return nil, errors.New("DATABASE_URL is required (see .env.example)")
+	}
+	dbPool, err := pgxpool.New(workCtx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: open pool: %w", err)
+	}
+	defer dbPool.Close()
+	if err := dbPool.Ping(workCtx); err != nil {
+		return nil, fmt.Errorf("postgres: ping: %w", err)
+	}
+
+	jobStore := storepg.New(dbPool)
+	return executeFileAnalysis(
+		workCtx,
+		signalCtx,
+		config.input,
+		config.outputPath,
+		shutdownTimeout,
+		jobStore,
+		dlq.New(jobStore),
+	)
+}
+
+func executeFileAnalysis(
+	workCtx context.Context,
+	signalCtx context.Context,
+	root string,
+	outputPath string,
+	shutdownTimeout time.Duration,
+	durableStore store.Store,
+	deadLetters *dlq.DLQ,
+) (*filegraph.Report, error) {
+	paths, index, err := filegraph.Discover(root)
+	if err != nil {
+		return nil, err
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("filegraph: resolve project root %q: %w", root, err)
+	}
+	absoluteRoot = filepath.Clean(absoluteRoot)
+
+	graphStore := filegraph.NewStore()
+	for _, path := range paths {
+		graphStore.AddNode(filegraph.Node{Path: path})
+	}
+	if len(paths) > 0 {
+		handler, err := filegraph.NewHandler(absoluteRoot, index, graphStore)
+		if err != nil {
+			return nil, err
+		}
+		bufferSize := 100
+		if len(paths) > bufferSize {
+			bufferSize = len(paths)
+		}
+		q := queue.New(bufferSize, durableStore)
+		options := make([]worker.Option, 0, 2)
+		if durableStore != nil {
+			options = append(options, worker.WithStore(durableStore))
+		}
+		if deadLetters != nil {
+			options = append(options, worker.WithDLQ(deadLetters))
+		}
+		pool := worker.NewWithOptions(10, q, handler, options...)
+		for _, path := range paths {
+			queued, err := filegraph.NewJob(absoluteRoot, path)
+			if err != nil {
+				return nil, err
+			}
+			if err := pool.Submit(queued); err != nil {
+				return nil, fmt.Errorf("filegraph: submit %q: %w", path, err)
+			}
+		}
+		pool.Start(workCtx)
+
+		select {
+		case <-pool.Done():
+		case <-signalCtx.Done():
+		}
+
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		if err := pool.Shutdown(shutdownCtx); err != nil {
+			return nil, fmt.Errorf("filegraph: shutdown: %w", err)
+		}
+	}
+
+	report := filegraph.GenerateReport(filepath.Base(absoluteRoot), graphStore)
+	if err := writeFileGraphReport(outputPath, report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+func writeFileGraphReport(outputPath string, report filegraph.Report) error {
+	data, err := filegraph.MarshalReport(report)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		return fmt.Errorf("write file dependency graph %q: %w", outputPath, err)
+	}
+	return nil
+}
+
 func parseCLIArgs(args []string) (cliConfig, error) {
 	flags := flag.NewFlagSet("auditor", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	outputPath := flags.String("output", "", "write a Markdown report to this path")
+	outputPath := flags.String("output", "", "write the analysis report to this path")
+	analysis := flags.String("analysis", "packages", "analysis mode: packages or files")
 	ecosystem := flags.String("ecosystem", "npm", "dependency ecosystem: npm, python, or go")
 	ref := flags.String("ref", "", "GitHub branch, tag, or commit")
 	manifestPath := flags.String("manifest", "package.json", "repository-relative dependency manifest path")
@@ -257,6 +385,9 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 	})
 	if setOptions["output"] && *outputPath == "" {
 		return cliConfig{}, errors.New("--output requires a non-empty path")
+	}
+	if *analysis != "packages" && *analysis != "files" {
+		return cliConfig{}, fmt.Errorf("--analysis must be packages or files, got %q", *analysis)
 	}
 	if setOptions["ref"] && *ref == "" {
 		return cliConfig{}, errors.New("--ref requires a non-empty value")
@@ -279,7 +410,20 @@ func parseCLIArgs(args []string) (cliConfig, error) {
 		return cliConfig{}, fmt.Errorf("unexpected extra positional argument %q", positional[1])
 	}
 
-	config := cliConfig{input: positional[0], outputPath: *outputPath, ecosystem: *ecosystem, manifestPath: *manifestPath}
+	if *analysis == "files" {
+		if !setOptions["output"] {
+			return cliConfig{}, errors.New("--output is required with --analysis files")
+		}
+		if setOptions["ecosystem"] || setOptions["ref"] || setOptions["manifest"] || setOptions["python-version"] || setOptions["python-platform"] {
+			return cliConfig{}, errors.New("--ecosystem, --ref, --manifest, and Python target options are not valid with --analysis files")
+		}
+		if strings.Contains(positional[0], "://") {
+			return cliConfig{}, errors.New("--analysis files requires a local project directory")
+		}
+		return cliConfig{input: positional[0], outputPath: *outputPath, analysis: *analysis}, nil
+	}
+
+	config := cliConfig{input: positional[0], outputPath: *outputPath, analysis: *analysis, ecosystem: *ecosystem, manifestPath: *manifestPath}
 	if config.ecosystem == "python" {
 		target, err := pypi.NewTarget(*pythonVersion, *pythonPlatform)
 		if err != nil {

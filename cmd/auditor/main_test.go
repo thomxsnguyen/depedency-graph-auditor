@@ -17,6 +17,7 @@ import (
 
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/auditor"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/pypi"
@@ -55,13 +56,18 @@ func TestParseCLIArgs(t *testing.T) {
 		want    cliConfig
 		wantErr string
 	}{
-		{name: "input only", args: []string{"package.json"}, want: cliConfig{input: "package.json", ecosystem: "npm", manifestPath: "package.json"}},
-		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{input: "package.json", outputPath: "report.md", ecosystem: "npm", manifestPath: "package.json"}},
+		{name: "input only", args: []string{"package.json"}, want: cliConfig{input: "package.json", analysis: "packages", ecosystem: "npm", manifestPath: "package.json"}},
+		{name: "with output", args: []string{"--output", "report.md", "package.json"}, want: cliConfig{input: "package.json", outputPath: "report.md", analysis: "packages", ecosystem: "npm", manifestPath: "package.json"}},
+		{
+			name: "file analysis",
+			args: []string{"--analysis", "files", "--output", "file-graph.json", "personal-portfolio"},
+			want: cliConfig{input: "personal-portfolio", outputPath: "file-graph.json", analysis: "files"},
+		},
 		{
 			name: "GitHub input with options",
 			args: []string{"--ref", "development", "--manifest", "packages/web/package.json", "https://github.com/acme/widget.git/"},
 			want: cliConfig{
-				input: "https://github.com/acme/widget.git/", ecosystem: "npm", ref: "development", manifestPath: "packages/web/package.json",
+				input: "https://github.com/acme/widget.git/", analysis: "packages", ecosystem: "npm", ref: "development", manifestPath: "packages/web/package.json",
 				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
 		},
@@ -69,7 +75,7 @@ func TestParseCLIArgs(t *testing.T) {
 			name: "local Python pyproject",
 			args: []string{"--ecosystem", "python", "--python-version", "3.11", "--python-platform", "darwin", "pyproject.toml"},
 			want: cliConfig{
-				input: "pyproject.toml", ecosystem: "python", manifestPath: "pyproject.toml",
+				input: "pyproject.toml", analysis: "packages", ecosystem: "python", manifestPath: "pyproject.toml",
 				pythonTarget: mustPythonTarget(t, "3.11", "darwin"),
 			},
 		},
@@ -77,7 +83,7 @@ func TestParseCLIArgs(t *testing.T) {
 			name: "GitHub Python requirements",
 			args: []string{"--ecosystem", "python", "--manifest", "requirements.txt", "https://github.com/acme/widget"},
 			want: cliConfig{
-				input: "https://github.com/acme/widget", ecosystem: "python", manifestPath: "requirements.txt",
+				input: "https://github.com/acme/widget", analysis: "packages", ecosystem: "python", manifestPath: "requirements.txt",
 				pythonTarget: mustPythonTarget(t, "3.12", "linux"),
 				repository:   githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
@@ -85,13 +91,13 @@ func TestParseCLIArgs(t *testing.T) {
 		{
 			name: "local Go manifest",
 			args: []string{"--ecosystem", "go", "services/api/go.mod"},
-			want: cliConfig{input: "services/api/go.mod", ecosystem: "go", manifestPath: "go.mod"},
+			want: cliConfig{input: "services/api/go.mod", analysis: "packages", ecosystem: "go", manifestPath: "go.mod"},
 		},
 		{
 			name: "GitHub Go manifest",
 			args: []string{"--ecosystem", "go", "--manifest", "go.mod", "https://github.com/acme/widget"},
 			want: cliConfig{
-				input: "https://github.com/acme/widget", ecosystem: "go", manifestPath: "go.mod",
+				input: "https://github.com/acme/widget", analysis: "packages", ecosystem: "go", manifestPath: "go.mod",
 				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
 		},
@@ -99,7 +105,7 @@ func TestParseCLIArgs(t *testing.T) {
 			name: "nested GitHub Go manifest with ref",
 			args: []string{"--ecosystem", "go", "--manifest", "services/api/go.mod", "--ref", "main", "https://github.com/acme/widget"},
 			want: cliConfig{
-				input: "https://github.com/acme/widget", ecosystem: "go", ref: "main", manifestPath: "services/api/go.mod",
+				input: "https://github.com/acme/widget", analysis: "packages", ecosystem: "go", ref: "main", manifestPath: "services/api/go.mod",
 				repository: githubsource.Repository{Owner: "acme", Name: "widget"}, isGitHub: true,
 			},
 		},
@@ -114,6 +120,10 @@ func TestParseCLIArgs(t *testing.T) {
 		{name: "invalid GitHub host", args: []string{"https://example.com/acme/widget"}, wantErr: "host must be github.com"},
 		{name: "invalid manifest traversal", args: []string{"--manifest", "../package.json", "https://github.com/acme/widget"}, wantErr: "invalid segment"},
 		{name: "invalid ecosystem", args: []string{"--ecosystem", "ruby", "package.json"}, wantErr: "npm, python, or go"},
+		{name: "invalid analysis", args: []string{"--analysis", "symbols", "package.json"}, wantErr: "packages or files"},
+		{name: "file analysis requires output", args: []string{"--analysis", "files", "project"}, wantErr: "--output is required"},
+		{name: "file analysis rejects GitHub", args: []string{"--analysis", "files", "--output", "graph.json", "https://github.com/acme/widget"}, wantErr: "local project directory"},
+		{name: "file analysis rejects ecosystem", args: []string{"--analysis", "files", "--ecosystem", "npm", "--output", "graph.json", "project"}, wantErr: "not valid"},
 		{name: "Python option with npm", args: []string{"--python-version", "3.11", "package.json"}, wantErr: "valid only"},
 		{name: "Python option with Go", args: []string{"--ecosystem", "go", "--python-version", "3.11", "go.mod"}, wantErr: "valid only with --ecosystem python"},
 		{name: "Python GitHub manifest required", args: []string{"--ecosystem", "python", "https://github.com/acme/widget"}, wantErr: "--manifest is required"},
@@ -152,6 +162,94 @@ func mustPythonTarget(t *testing.T, version, platform string) pypi.Target {
 		t.Fatal(err)
 	}
 	return target
+}
+
+func TestExecuteFileAnalysisUsesQueueAndProducesCompleteGraph(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "src/App.tsx", `import Button from "./components/Button"`)
+	writeProjectFile(t, root, "src/components/Button.tsx", `import App from "../App"`)
+	writeProjectFile(t, root, "src/orphan.ts", `export const orphan = true`)
+	writeProjectFile(t, root, "src/broken.ts", `import "./missing"`)
+	writeProjectFile(t, root, "node_modules/ignored.js", `import "../../src/App"`)
+	writeProjectFile(t, root, "README.md", "ignored")
+
+	firstOutput := filepath.Join(t.TempDir(), "file-graph.json")
+	report, err := executeFileAnalysis(
+		context.Background(),
+		context.Background(),
+		root,
+		firstOutput,
+		time.Second,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Nodes) != 4 {
+		t.Fatalf("nodes: got %+v, want four project files", report.Nodes)
+	}
+	wantEdges := []filegraph.Edge{
+		{From: "src/App.tsx", To: "src/components/Button.tsx"},
+		{From: "src/components/Button.tsx", To: "src/App.tsx"},
+	}
+	if !reflect.DeepEqual(report.Edges, wantEdges) {
+		t.Fatalf("edges: got %+v, want %+v", report.Edges, wantEdges)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != "src/broken.ts" || report.Diagnostics[0].Import != "./missing" {
+		t.Fatalf("diagnostics: %+v", report.Diagnostics)
+	}
+
+	firstJSON, err := os.ReadFile(firstOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOutput := filepath.Join(t.TempDir(), "file-graph.json")
+	if _, err := executeFileAnalysis(
+		context.Background(),
+		context.Background(),
+		root,
+		secondOutput,
+		time.Second,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := os.ReadFile(secondOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("file graph output is not deterministic:\n%s\n%s", firstJSON, secondJSON)
+	}
+}
+
+func TestExecuteFileAnalysisHandlesEmptyProject(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "file-graph.json")
+	report, err := executeFileAnalysis(
+		context.Background(), context.Background(), t.TempDir(), output, time.Second, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Nodes) != 0 || len(report.Edges) != 0 || len(report.Diagnostics) != 0 {
+		t.Fatalf("report: %+v", report)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("output was not written: %v", err)
+	}
+}
+
+func writeProjectFile(t *testing.T, root, relative, contents string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestParsePythonManifestAndSelectRegistry(t *testing.T) {
