@@ -9,10 +9,11 @@ import (
 // GenerateReport snapshots and deterministically orders one file graph.
 func GenerateReport(root string, store *Store) Report {
 	report := Report{
-		Root:        root,
-		Nodes:       store.Nodes(),
-		Edges:       store.Edges(),
-		Diagnostics: store.Diagnostics(),
+		SchemaVersion: 1,
+		Root:          root,
+		Nodes:         store.Nodes(),
+		Edges:         store.Edges(),
+		Diagnostics:   store.Diagnostics(),
 	}
 	sort.Slice(report.Nodes, func(i, j int) bool {
 		return report.Nodes[i].Path < report.Nodes[j].Path

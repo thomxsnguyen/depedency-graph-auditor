@@ -34,6 +34,9 @@ func TestReportIsDeterministic(t *testing.T) {
 	if len(firstJSON) == 0 || firstJSON[len(firstJSON)-1] != '\n' {
 		t.Fatal("report must end in a newline")
 	}
+	if !bytes.Contains(firstJSON, []byte(`"schemaVersion": 1`)) {
+		t.Fatalf("report omitted schema version:\n%s", firstJSON)
+	}
 }
 
 func TestEmptyReportUsesJSONArrays(t *testing.T) {

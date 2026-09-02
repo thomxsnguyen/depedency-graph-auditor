@@ -255,6 +255,47 @@ func TestExecuteFileAnalysisHandlesEmptyProject(t *testing.T) {
 	}
 }
 
+func TestExecuteFileAnalysisProducesOnePolyglotGraph(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "frontend/App.tsx", `import "./Button"`)
+	writeProjectFile(t, root, "frontend/Button.tsx", "export const Button = true")
+	writeProjectFile(t, root, "backend/__init__.py", "")
+	writeProjectFile(t, root, "backend/app.py", "from . import models\nimport requests\n")
+	writeProjectFile(t, root, "backend/models.py", "class Model:\n    pass\n")
+	writeProjectFile(t, root, "README.md", "unsupported")
+
+	output := filepath.Join(t.TempDir(), "polyglot-file-graph.json")
+	report, err := executeFileAnalysis(
+		context.Background(), context.Background(), root, "polyglot", output, time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SchemaVersion != 1 || report.Root != "polyglot" {
+		t.Fatalf("report metadata: %+v", report)
+	}
+	wantNodes := []filegraph.Node{
+		{Path: "backend/__init__.py"},
+		{Path: "backend/app.py"},
+		{Path: "backend/models.py"},
+		{Path: "frontend/App.tsx"},
+		{Path: "frontend/Button.tsx"},
+	}
+	if !reflect.DeepEqual(report.Nodes, wantNodes) {
+		t.Fatalf("nodes: got %+v, want %+v", report.Nodes, wantNodes)
+	}
+	wantEdges := []filegraph.Edge{
+		{From: "backend/app.py", To: "backend/models.py"},
+		{From: "frontend/App.tsx", To: "frontend/Button.tsx"},
+	}
+	if !reflect.DeepEqual(report.Edges, wantEdges) {
+		t.Fatalf("edges: got %+v, want %+v", report.Edges, wantEdges)
+	}
+	if len(report.Diagnostics) != 0 {
+		t.Fatalf("diagnostics: %+v", report.Diagnostics)
+	}
+}
+
 func TestRunGitHubPythonFileAnalysis(t *testing.T) {
 	archive := repositoryZIP(t, map[string]string{
 		"acme-widget/src/widget/__init__.py": "",

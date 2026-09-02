@@ -1,14 +1,16 @@
-package filegraph
+package javascript
 
 import (
 	"path"
 	"strings"
+
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
 )
 
 var resolutionExtensions = []string{".ts", ".tsx", ".js", ".jsx"}
 
 // Resolve maps one relative import specifier to an indexed source file.
-func Resolve(index Index, importer, specifier string) (string, bool) {
+func Resolve(index analyzer.Index, importer, specifier string) (string, bool) {
 	if !strings.HasPrefix(specifier, "./") && !strings.HasPrefix(specifier, "../") {
 		return "", false
 	}
@@ -31,9 +33,18 @@ func Resolve(index Index, importer, specifier string) (string, bool) {
 	}
 
 	for _, candidate := range candidates {
-		if _, exists := index[candidate]; exists {
+		if index.Has(candidate) {
 			return candidate, true
 		}
 	}
 	return "", false
+}
+
+func supportedExtension(extension string) bool {
+	switch strings.ToLower(extension) {
+	case ".js", ".jsx", ".ts", ".tsx":
+		return true
+	default:
+		return false
+	}
 }

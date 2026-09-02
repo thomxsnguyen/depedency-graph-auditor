@@ -1,18 +1,23 @@
-package filegraph
+package javascript_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/javascript"
+)
 
 func TestResolve(t *testing.T) {
-	index := Index{
-		"src/exact.ts":        {},
-		"src/component.tsx":   {},
-		"src/util.js":         {},
-		"src/legacy.jsx":      {},
-		"src/folder/index.ts": {},
-		"shared/index.tsx":    {},
-		"src/preferred.ts":    {},
-		"src/preferred.tsx":   {},
-	}
+	index := filegraph.NewRepositoryIndex([]string{
+		"src/exact.ts",
+		"src/component.tsx",
+		"src/util.js",
+		"src/legacy.jsx",
+		"src/folder/index.ts",
+		"shared/index.tsx",
+		"src/preferred.ts",
+		"src/preferred.tsx",
+	})
 	tests := []struct {
 		name      string
 		importer  string
@@ -34,7 +39,7 @@ func TestResolve(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, found := Resolve(index, test.importer, test.specifier)
+			got, found := javascript.Resolve(index, test.importer, test.specifier)
 			if got != test.want || found != test.found {
 				t.Fatalf("Resolve: got (%q, %t), want (%q, %t)", got, found, test.want, test.found)
 			}

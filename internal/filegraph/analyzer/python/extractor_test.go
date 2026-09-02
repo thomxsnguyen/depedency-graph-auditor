@@ -1,11 +1,11 @@
-package filegraph
+package python
 
 import (
 	"reflect"
 	"testing"
 )
 
-func TestExtractPythonImports(t *testing.T) {
+func TestExtractImports(t *testing.T) {
 	source := []byte(`
 """Module docs mentioning import ignored.fake."""
 import pc_diagnostic.cache
@@ -21,17 +21,17 @@ from pc_diagnostic.gui.components import (
 )
 
 if TYPE_CHECKING:
-    from pc_diagnostic.providers.base import Provider  # local type import
+    from pc_diagnostic.providers.base import Provider
 
 text = "import ignored.string"
 # from ignored.comment import Value
 `)
 
-	got, err := ExtractPythonImports(source)
+	got, err := ExtractImports(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []PythonImport{
+	want := []Import{
 		{Module: "pc_diagnostic.cache"},
 		{Module: "pc_diagnostic.models"},
 		{Module: "first"},
@@ -48,18 +48,18 @@ text = "import ignored.string"
 	}
 }
 
-func TestExtractPythonImportsHandlesBackslashContinuation(t *testing.T) {
-	got, err := ExtractPythonImports([]byte("import pc_diagnostic.cache, \\\npc_diagnostic.models\n"))
+func TestExtractImportsHandlesBackslashContinuation(t *testing.T) {
+	got, err := ExtractImports([]byte("import pc_diagnostic.cache, \\\npc_diagnostic.models\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []PythonImport{{Module: "pc_diagnostic.cache"}, {Module: "pc_diagnostic.models"}}
+	want := []Import{{Module: "pc_diagnostic.cache"}, {Module: "pc_diagnostic.models"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("imports: got %+v, want %+v", got, want)
 	}
 }
 
-func TestExtractPythonImportsRejectsMalformedSupportedSyntax(t *testing.T) {
+func TestExtractImportsRejectsMalformedSupportedSyntax(t *testing.T) {
 	for _, source := range []string{
 		"import\n",
 		"from pc_diagnostic.models Snapshot\n",
@@ -68,7 +68,7 @@ func TestExtractPythonImportsRejectsMalformedSupportedSyntax(t *testing.T) {
 		`"""unterminated`,
 	} {
 		t.Run(source, func(t *testing.T) {
-			if _, err := ExtractPythonImports([]byte(source)); err == nil {
+			if _, err := ExtractImports([]byte(source)); err == nil {
 				t.Fatalf("expected error for %q", source)
 			}
 		})

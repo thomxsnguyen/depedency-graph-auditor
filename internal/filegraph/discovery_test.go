@@ -35,7 +35,7 @@ func TestDiscoverFiltersAndSortsSourceFiles(t *testing.T) {
 		t.Fatalf("paths: got %v, want %v", paths, want)
 	}
 	for _, path := range want {
-		if _, exists := index[path]; !exists {
+		if !index.Has(path) {
 			t.Fatalf("index omitted %q", path)
 		}
 	}

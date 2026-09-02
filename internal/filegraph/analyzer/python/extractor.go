@@ -1,19 +1,19 @@
-package filegraph
+package python
 
 import (
 	"fmt"
 	"strings"
 )
 
-// PythonImport is one module referenced by a Python import statement.
-type PythonImport struct {
+// Import is one module referenced by a Python import statement.
+type Import struct {
 	Module string
 	Level  int
 	Names  []string
 }
 
 // String reconstructs the meaningful module portion for diagnostics.
-func (imported PythonImport) String() string {
+func (imported Import) String() string {
 	module := strings.Repeat(".", imported.Level) + imported.Module
 	if imported.Module == "" && len(imported.Names) > 0 {
 		return module + strings.Join(imported.Names, ",")
@@ -21,52 +21,52 @@ func (imported PythonImport) String() string {
 	return module
 }
 
-type pythonTokenKind uint8
+type tokenKind uint8
 
 const (
-	pythonIdentifier pythonTokenKind = iota
-	pythonPunctuation
-	pythonNewline
+	identifier tokenKind = iota
+	punctuation
+	newline
 )
 
-type pythonToken struct {
-	kind  pythonTokenKind
+type token struct {
+	kind  tokenKind
 	value string
 }
 
-// ExtractPythonImports parses ordinary import and from-import statements
-// without executing or importing the source file.
-func ExtractPythonImports(source []byte) ([]PythonImport, error) {
-	tokens, err := tokenizePython(source)
+// ExtractImports parses ordinary import and from-import statements without
+// executing or importing the source file.
+func ExtractImports(source []byte) ([]Import, error) {
+	tokens, err := tokenize(source)
 	if err != nil {
 		return nil, err
 	}
 
-	imports := make([]PythonImport, 0)
+	imports := make([]Import, 0)
 	statementStart := true
 	for index := 0; index < len(tokens); {
-		token := tokens[index]
-		if token.kind == pythonNewline || token.value == ";" {
+		current := tokens[index]
+		if current.kind == newline || current.value == ";" {
 			statementStart = true
 			index++
 			continue
 		}
-		if !statementStart || token.kind != pythonIdentifier {
+		if !statementStart || current.kind != identifier {
 			statementStart = false
 			index++
 			continue
 		}
 
-		switch token.value {
+		switch current.value {
 		case "import":
-			parsed, next, err := parsePythonImport(tokens, index+1)
+			parsed, next, err := parseImport(tokens, index+1)
 			if err != nil {
 				return nil, err
 			}
 			imports = append(imports, parsed...)
 			index = next
 		case "from":
-			parsed, next, err := parsePythonFromImport(tokens, index+1)
+			parsed, next, err := parseFromImport(tokens, index+1)
 			if err != nil {
 				return nil, err
 			}
@@ -80,19 +80,19 @@ func ExtractPythonImports(source []byte) ([]PythonImport, error) {
 	return imports, nil
 }
 
-func parsePythonImport(tokens []pythonToken, start int) ([]PythonImport, int, error) {
-	imports := make([]PythonImport, 0, 1)
+func parseImport(tokens []token, start int) ([]Import, int, error) {
+	imports := make([]Import, 0, 1)
 	index := start
 	for {
-		module, next := parseDottedPythonName(tokens, index)
+		module, next := parseDottedName(tokens, index)
 		if module == "" {
 			return nil, index, fmt.Errorf("invalid Python import statement")
 		}
-		imports = append(imports, PythonImport{Module: module})
+		imports = append(imports, Import{Module: module})
 		index = next
-		if index < len(tokens) && tokens[index].kind == pythonIdentifier && tokens[index].value == "as" {
+		if index < len(tokens) && tokens[index].kind == identifier && tokens[index].value == "as" {
 			index++
-			if index >= len(tokens) || tokens[index].kind != pythonIdentifier {
+			if index >= len(tokens) || tokens[index].kind != identifier {
 				return nil, index, fmt.Errorf("invalid Python import alias")
 			}
 			index++
@@ -104,7 +104,7 @@ func parsePythonImport(tokens []pythonToken, start int) ([]PythonImport, int, er
 	}
 }
 
-func parsePythonFromImport(tokens []pythonToken, start int) (PythonImport, int, error) {
+func parseFromImport(tokens []token, start int) (Import, int, error) {
 	index := start
 	level := 0
 	for index < len(tokens) && tokens[index].value == "." {
@@ -112,16 +112,16 @@ func parsePythonFromImport(tokens []pythonToken, start int) (PythonImport, int, 
 		index++
 	}
 	module := ""
-	if index < len(tokens) && !(tokens[index].kind == pythonIdentifier && tokens[index].value == "import") {
+	if index < len(tokens) && !(tokens[index].kind == identifier && tokens[index].value == "import") {
 		var next int
-		module, next = parseDottedPythonName(tokens, index)
+		module, next = parseDottedName(tokens, index)
 		index = next
 	}
 	if level == 0 && module == "" {
-		return PythonImport{}, index, fmt.Errorf("invalid Python from-import module")
+		return Import{}, index, fmt.Errorf("invalid Python from-import module")
 	}
-	if index >= len(tokens) || tokens[index].kind != pythonIdentifier || tokens[index].value != "import" {
-		return PythonImport{}, index, fmt.Errorf("invalid Python from-import statement")
+	if index >= len(tokens) || tokens[index].kind != identifier || tokens[index].value != "import" {
+		return Import{}, index, fmt.Errorf("invalid Python from-import statement")
 	}
 	index++
 	if index < len(tokens) && tokens[index].value == "(" {
@@ -129,8 +129,8 @@ func parsePythonFromImport(tokens []pythonToken, start int) (PythonImport, int, 
 	}
 
 	names := make([]string, 0, 1)
-	for index < len(tokens) && tokens[index].kind != pythonNewline && tokens[index].value != ";" && tokens[index].value != ")" {
-		if tokens[index].kind == pythonIdentifier || tokens[index].value == "*" {
+	for index < len(tokens) && tokens[index].kind != newline && tokens[index].value != ";" && tokens[index].value != ")" {
+		if tokens[index].kind == identifier || tokens[index].value == "*" {
 			name := tokens[index].value
 			if name == "as" {
 				index += 2
@@ -141,26 +141,26 @@ func parsePythonFromImport(tokens []pythonToken, start int) (PythonImport, int, 
 		index++
 	}
 	if len(names) == 0 {
-		return PythonImport{}, index, fmt.Errorf("invalid Python from-import names")
+		return Import{}, index, fmt.Errorf("invalid Python from-import names")
 	}
-	return PythonImport{Module: module, Level: level, Names: names}, index, nil
+	return Import{Module: module, Level: level, Names: names}, index, nil
 }
 
-func parseDottedPythonName(tokens []pythonToken, start int) (string, int) {
-	if start >= len(tokens) || tokens[start].kind != pythonIdentifier {
+func parseDottedName(tokens []token, start int) (string, int) {
+	if start >= len(tokens) || tokens[start].kind != identifier {
 		return "", start
 	}
 	parts := []string{tokens[start].value}
 	index := start + 1
-	for index+1 < len(tokens) && tokens[index].value == "." && tokens[index+1].kind == pythonIdentifier {
+	for index+1 < len(tokens) && tokens[index].value == "." && tokens[index+1].kind == identifier {
 		parts = append(parts, tokens[index+1].value)
 		index += 2
 	}
 	return strings.Join(parts, "."), index
 }
 
-func tokenizePython(source []byte) ([]pythonToken, error) {
-	tokens := make([]pythonToken, 0)
+func tokenize(source []byte) ([]token, error) {
+	tokens := make([]token, 0)
 	bracketDepth := 0
 	for index := 0; index < len(source); {
 		current := source[index]
@@ -175,30 +175,30 @@ func tokenizePython(source []byte) ([]pythonToken, error) {
 			index += 2
 		case current == '\n':
 			if bracketDepth == 0 {
-				tokens = append(tokens, pythonToken{kind: pythonNewline, value: "\n"})
+				tokens = append(tokens, token{kind: newline, value: "\n"})
 			}
 			index++
 		case current == '\'' || current == '"':
-			next, newlines, err := skipPythonString(source, index, current)
+			next, newlines, err := skipString(source, index, current)
 			if err != nil {
 				return nil, err
 			}
 			if bracketDepth == 0 {
 				for range newlines {
-					tokens = append(tokens, pythonToken{kind: pythonNewline, value: "\n"})
+					tokens = append(tokens, token{kind: newline, value: "\n"})
 				}
 			}
 			index = next
-		case isPythonIdentifierStart(current):
+		case isIdentifierStart(current):
 			end := index + 1
-			for end < len(source) && isPythonIdentifierPart(source[end]) {
+			for end < len(source) && isIdentifierPart(source[end]) {
 				end++
 			}
-			tokens = append(tokens, pythonToken{kind: pythonIdentifier, value: string(source[index:end])})
+			tokens = append(tokens, token{kind: identifier, value: string(source[index:end])})
 			index = end
 		default:
 			value := string(current)
-			tokens = append(tokens, pythonToken{kind: pythonPunctuation, value: value})
+			tokens = append(tokens, token{kind: punctuation, value: value})
 			if current == '(' || current == '[' || current == '{' {
 				bracketDepth++
 			} else if current == ')' || current == ']' || current == '}' {
@@ -212,7 +212,7 @@ func tokenizePython(source []byte) ([]pythonToken, error) {
 	return tokens, nil
 }
 
-func skipPythonString(source []byte, start int, quote byte) (int, int, error) {
+func skipString(source []byte, start int, quote byte) (int, int, error) {
 	triple := start+2 < len(source) && source[start+1] == quote && source[start+2] == quote
 	index := start + 1
 	if triple {
@@ -241,10 +241,10 @@ func skipPythonString(source []byte, start int, quote byte) (int, int, error) {
 	return 0, 0, fmt.Errorf("unterminated Python string literal")
 }
 
-func isPythonIdentifierStart(value byte) bool {
+func isIdentifierStart(value byte) bool {
 	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
 }
 
-func isPythonIdentifierPart(value byte) bool {
-	return isPythonIdentifierStart(value) || value >= '0' && value <= '9'
+func isIdentifierPart(value byte) bool {
+	return isIdentifierStart(value) || value >= '0' && value <= '9'
 }

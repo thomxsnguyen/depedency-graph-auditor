@@ -4,19 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 )
 
-const (
-	// JobType identifies one file dependency analysis job.
-	JobType            = "analyze_file"
-	maxSourceFileBytes = int64(1 << 20)
-)
+// JobType identifies one file dependency analysis job.
+const JobType = "analyze_file"
 
 // Payload identifies one source file beneath a validated project root.
 type Payload struct {
@@ -24,18 +20,16 @@ type Payload struct {
 	Path string `json:"path"`
 }
 
-type sourceReader func(string) ([]byte, error)
-
 // Handler extracts and records local imports for one source file.
 type Handler struct {
-	root       string
-	index      Index
-	store      *Store
-	readSource sourceReader
+	root     string
+	index    RepositoryIndex
+	registry *analyzer.Registry
+	store    *Store
 }
 
 // NewHandler constructs a file graph job handler.
-func NewHandler(root string, index Index, store *Store) (*Handler, error) {
+func NewHandler(root string, index RepositoryIndex, registry *analyzer.Registry, store *Store) (*Handler, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("filegraph: resolve handler root %q: %w", root, err)
@@ -43,16 +37,19 @@ func NewHandler(root string, index Index, store *Store) (*Handler, error) {
 	if store == nil {
 		return nil, fmt.Errorf("filegraph: store is required")
 	}
+	if registry == nil {
+		return nil, fmt.Errorf("filegraph: analyzer registry is required")
+	}
 	return &Handler{
-		root:       filepath.Clean(absoluteRoot),
-		index:      index,
-		store:      store,
-		readSource: readSourceFile,
+		root:     filepath.Clean(absoluteRoot),
+		index:    index,
+		registry: registry,
+		store:    store,
 	}, nil
 }
 
 // Handle implements job.Handler for analyze_file jobs.
-func (h *Handler) Handle(_ context.Context, queued job.Job) ([]job.Job, error) {
+func (h *Handler) Handle(ctx context.Context, queued job.Job) ([]job.Job, error) {
 	if queued.Type != JobType {
 		return nil, fmt.Errorf("filegraph: unsupported job type %q", queued.Type)
 	}
@@ -64,59 +61,40 @@ func (h *Handler) Handle(_ context.Context, queued job.Job) ([]job.Job, error) {
 	if filepath.Clean(payload.Root) != h.root {
 		return nil, fmt.Errorf("filegraph: job root does not match configured project root")
 	}
-	absolutePath, relativePath, err := safeSourcePath(h.root, payload.Path)
+	_, relativePath, err := safeSourcePath(h.root, payload.Path)
 	if err != nil {
 		return nil, err
 	}
-	if _, exists := h.index[relativePath]; !exists {
+	if !h.index.Has(relativePath) {
 		return nil, fmt.Errorf("filegraph: source path %q is not in the project index", relativePath)
 	}
 
-	source, err := h.readSource(absolutePath)
+	selected, supported, err := h.registry.AnalyzerFor(relativePath)
 	if err != nil {
-		return nil, fmt.Errorf("filegraph: read %q: %w", relativePath, err)
+		return nil, err
 	}
-	if filepath.Ext(relativePath) == ".py" {
-		imports, err := ExtractPythonImports(source)
-		if err != nil {
-			h.store.AddDiagnostic(Diagnostic{Path: relativePath, Message: err.Error()})
-			return nil, nil
-		}
-		for _, imported := range imports {
-			resolved, local := ResolvePython(h.index, relativePath, imported)
-			if len(resolved) == 0 {
-				if local {
-					h.store.AddDiagnostic(Diagnostic{
-						Path:    relativePath,
-						Import:  imported.String(),
-						Message: "unresolved local import",
-					})
-				}
-				continue
-			}
-			for _, target := range resolved {
-				h.store.AddEdge(Edge{From: relativePath, To: target})
-			}
-		}
+	if !supported {
+		h.store.AddDiagnostic(Diagnostic{Path: relativePath, Message: "unsupported source language"})
 		return nil, nil
 	}
 
-	imports, err := ExtractImports(source)
+	result, err := selected.Analyze(ctx, analyzer.FileContext{
+		Root:  h.root,
+		Path:  relativePath,
+		Index: h.index,
+	})
 	if err != nil {
-		h.store.AddDiagnostic(Diagnostic{Path: relativePath, Message: err.Error()})
-		return nil, nil
+		return nil, fmt.Errorf("filegraph: analyze %q: %w", relativePath, err)
 	}
-	for _, specifier := range imports {
-		resolved, ok := Resolve(h.index, relativePath, specifier)
-		if !ok {
-			h.store.AddDiagnostic(Diagnostic{
-				Path:    relativePath,
-				Import:  specifier,
-				Message: "unresolved local import",
-			})
-			continue
-		}
-		h.store.AddEdge(Edge{From: relativePath, To: resolved})
+	for _, dependency := range result.Dependencies {
+		h.store.AddEdge(Edge{From: relativePath, To: dependency.Target})
+	}
+	for _, diagnostic := range result.Diagnostics {
+		h.store.AddDiagnostic(Diagnostic{
+			Path:    relativePath,
+			Import:  diagnostic.Reference,
+			Message: diagnostic.Message,
+		})
 	}
 	return nil, nil
 }
@@ -144,21 +122,4 @@ func safeSourcePath(root, relative string) (string, string, error) {
 		return "", "", fmt.Errorf("filegraph: source path %q escapes the project root", relative)
 	}
 	return absolute, filepath.ToSlash(normalized), nil
-}
-
-func readSourceFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(io.LimitReader(file, maxSourceFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxSourceFileBytes {
-		return nil, fmt.Errorf("source file exceeds the 1 MiB limit")
-	}
-	return data, nil
 }

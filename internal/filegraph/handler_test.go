@@ -3,11 +3,13 @@ package filegraph
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	fileanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/javascript"
+	pythonanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/python"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
 )
 
@@ -23,7 +25,7 @@ func TestHandlerRecordsResolvedEdgesAndDiagnostics(t *testing.T) {
 	for _, path := range paths {
 		store.AddNode(Node{Path: path})
 	}
-	handler, err := NewHandler(root, index, store)
+	handler, err := NewHandler(root, index, testAnalyzerRegistry(t), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +57,7 @@ func TestHandlerRecordsExtractionFailuresWithoutRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStore()
-	handler, err := NewHandler(root, index, store)
+	handler, err := NewHandler(root, index, testAnalyzerRegistry(t), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ import psutil
 	for _, path := range paths {
 		store.AddNode(Node{Path: path})
 	}
-	handler, err := NewHandler(root, index, store)
+	handler, err := NewHandler(root, index, testAnalyzerRegistry(t), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +115,7 @@ func TestHandlerRejectsInvalidJobsAndPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHandler(root, index, NewStore())
+	handler, err := NewHandler(root, index, testAnalyzerRegistry(t), NewStore())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,16 +135,6 @@ func TestHandlerRejectsInvalidJobsAndPaths(t *testing.T) {
 	}
 }
 
-func TestReadSourceFileEnforcesSizeLimit(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "large.ts")
-	if err := os.WriteFile(path, []byte(strings.Repeat("x", int(maxSourceFileBytes)+1)), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readSourceFile(path); err == nil {
-		t.Fatal("expected size-limit error")
-	}
-}
-
 func mustPayload(t *testing.T, payload Payload) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(payload)
@@ -150,4 +142,13 @@ func mustPayload(t *testing.T, payload Payload) json.RawMessage {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func testAnalyzerRegistry(t *testing.T) *fileanalyzer.Registry {
+	t.Helper()
+	registry, err := fileanalyzer.NewRegistry(javascript.New(), pythonanalyzer.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
 }

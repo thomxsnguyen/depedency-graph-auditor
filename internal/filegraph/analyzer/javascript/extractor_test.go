@@ -1,4 +1,4 @@
-package filegraph
+package javascript
 
 import (
 	"reflect"
@@ -35,12 +35,11 @@ const template = ` + "`require('./template')`" + `
 }
 
 func TestExtractImportsRejectsUnterminatedSyntax(t *testing.T) {
-	tests := []string{
+	for _, source := range []string{
 		`/* never closed`,
 		`import "./never-closed`,
 		"const value = `never closed",
-	}
-	for _, source := range tests {
+	} {
 		if _, err := ExtractImports([]byte(source)); err == nil {
 			t.Fatalf("expected error for %q", source)
 		}

@@ -20,8 +20,9 @@ type Diagnostic struct {
 
 // Report is the deterministic JSON representation of a file graph.
 type Report struct {
-	Root        string       `json:"root"`
-	Nodes       []Node       `json:"nodes"`
-	Edges       []Edge       `json:"edges"`
-	Diagnostics []Diagnostic `json:"diagnostics"`
+	SchemaVersion int          `json:"schemaVersion"`
+	Root          string       `json:"root"`
+	Nodes         []Node       `json:"nodes"`
+	Edges         []Edge       `json:"edges"`
+	Diagnostics   []Diagnostic `json:"diagnostics"`
 }

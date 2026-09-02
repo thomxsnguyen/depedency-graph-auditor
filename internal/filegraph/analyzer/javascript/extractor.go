@@ -1,4 +1,4 @@
-package filegraph
+package javascript
 
 import (
 	"fmt"

@@ -5,12 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
-
-// Index is a read-only lookup set of normalized project-relative source paths.
-type Index map[string]struct{}
 
 var excludedDirectories = map[string]struct{}{
 	".git":          {},
@@ -29,18 +25,18 @@ var excludedDirectories = map[string]struct{}{
 
 // Discover finds supported source files beneath root and returns a stable list
 // plus an index used by import resolution.
-func Discover(root string) ([]string, Index, error) {
+func Discover(root string) ([]string, RepositoryIndex, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
-		return nil, nil, fmt.Errorf("filegraph: resolve project root %q: %w", root, err)
+		return nil, RepositoryIndex{}, fmt.Errorf("filegraph: resolve project root %q: %w", root, err)
 	}
 	absoluteRoot = filepath.Clean(absoluteRoot)
 	info, err := os.Stat(absoluteRoot)
 	if err != nil {
-		return nil, nil, fmt.Errorf("filegraph: inspect project root %q: %w", root, err)
+		return nil, RepositoryIndex{}, fmt.Errorf("filegraph: inspect project root %q: %w", root, err)
 	}
 	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("filegraph: project root %q is not a directory", root)
+		return nil, RepositoryIndex{}, fmt.Errorf("filegraph: project root %q is not a directory", root)
 	}
 
 	paths := make([]string, 0)
@@ -74,15 +70,11 @@ func Discover(root string) ([]string, Index, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("filegraph: discover source files under %q: %w", root, err)
+		return nil, RepositoryIndex{}, fmt.Errorf("filegraph: discover source files under %q: %w", root, err)
 	}
 
-	sort.Strings(paths)
-	index := make(Index, len(paths))
-	for _, path := range paths {
-		index[path] = struct{}{}
-	}
-	return paths, index, nil
+	index := NewRepositoryIndex(paths)
+	return index.Paths(), index, nil
 }
 
 func supportedExtension(extension string) bool {

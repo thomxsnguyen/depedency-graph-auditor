@@ -21,6 +21,9 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
+	fileanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/javascript"
+	pythonanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/python"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
@@ -315,7 +318,11 @@ func executeFileAnalysis(
 		graphStore.AddNode(filegraph.Node{Path: path})
 	}
 	if len(paths) > 0 {
-		handler, err := filegraph.NewHandler(absoluteRoot, index, graphStore)
+		registry, err := fileanalyzer.NewRegistry(javascript.New(), pythonanalyzer.New())
+		if err != nil {
+			return nil, err
+		}
+		handler, err := filegraph.NewHandler(absoluteRoot, index, registry, graphStore)
 		if err != nil {
 			return nil, err
 		}
