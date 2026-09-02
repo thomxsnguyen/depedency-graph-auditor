@@ -22,6 +22,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
 	fileanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
+	goanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/golang"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/javascript"
 	pythonanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/python"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
@@ -303,7 +304,7 @@ func executeFileAnalysis(
 	outputPath string,
 	shutdownTimeout time.Duration,
 ) (*filegraph.Report, error) {
-	paths, index, err := filegraph.Discover(root)
+	discovery, err := filegraph.DiscoverRepository(root)
 	if err != nil {
 		return nil, err
 	}
@@ -312,27 +313,38 @@ func executeFileAnalysis(
 		return nil, fmt.Errorf("filegraph: resolve project root %q: %w", root, err)
 	}
 	absoluteRoot = filepath.Clean(absoluteRoot)
+	moduleIndex, moduleDiagnostics, err := goanalyzer.BuildModuleIndex(
+		absoluteRoot,
+		discovery.Index,
+		discovery.GoModules,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	graphStore := filegraph.NewStore()
-	for _, path := range paths {
+	for _, path := range discovery.Paths {
 		graphStore.AddNode(filegraph.Node{Path: path})
 	}
-	if len(paths) > 0 {
-		registry, err := fileanalyzer.NewRegistry(javascript.New(), pythonanalyzer.New())
+	for _, diagnostic := range moduleDiagnostics {
+		graphStore.AddDiagnostic(filegraph.Diagnostic{Path: diagnostic.Path, Message: diagnostic.Message})
+	}
+	if len(discovery.Paths) > 0 {
+		registry, err := fileanalyzer.NewRegistry(javascript.New(), pythonanalyzer.New(), goanalyzer.New(moduleIndex))
 		if err != nil {
 			return nil, err
 		}
-		handler, err := filegraph.NewHandler(absoluteRoot, index, registry, graphStore)
+		handler, err := filegraph.NewHandler(absoluteRoot, discovery.Index, registry, graphStore)
 		if err != nil {
 			return nil, err
 		}
 		bufferSize := 100
-		if len(paths) > bufferSize {
-			bufferSize = len(paths)
+		if len(discovery.Paths) > bufferSize {
+			bufferSize = len(discovery.Paths)
 		}
 		q := queue.New(bufferSize)
 		pool := worker.New(10, q, handler)
-		for _, path := range paths {
+		for _, path := range discovery.Paths {
 			queued, err := filegraph.NewJob(absoluteRoot, path)
 			if err != nil {
 				return nil, err

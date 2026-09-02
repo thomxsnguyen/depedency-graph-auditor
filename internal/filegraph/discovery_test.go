@@ -13,6 +13,9 @@ func TestDiscoverFiltersAndSortsSourceFiles(t *testing.T) {
 	writeFixture(t, root, "src/z.js", "")
 	writeFixture(t, root, "src/a.tsx", "")
 	writeFixture(t, root, "src/python.py", "")
+	writeFixture(t, root, "cmd/server/main.go", "package main")
+	writeFixture(t, root, "go.mod", "module example.com/project")
+	writeFixture(t, root, "nested/go.mod", "module example.com/nested")
 	writeFixture(t, root, "src/readme.md", "")
 	writeFixture(t, root, "node_modules/package/index.js", "")
 	writeFixture(t, root, "dist/output.js", "")
@@ -25,19 +28,27 @@ func TestDiscoverFiltersAndSortsSourceFiles(t *testing.T) {
 	writeFixture(t, root, ".pytest_cache/cached.py", "")
 	writeFixture(t, root, ".mypy_cache/cached.py", "")
 	writeFixture(t, root, ".ruff_cache/cached.py", "")
+	writeFixture(t, root, "vendor/example.com/dependency/ignored.go", "package dependency")
 
-	paths, index, err := Discover(root)
+	discovery, err := DiscoverRepository(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"src/a.tsx", "src/python.py", "src/z.js"}
-	if !reflect.DeepEqual(paths, want) {
-		t.Fatalf("paths: got %v, want %v", paths, want)
+	want := []string{"cmd/server/main.go", "src/a.tsx", "src/python.py", "src/z.js"}
+	if !reflect.DeepEqual(discovery.Paths, want) {
+		t.Fatalf("paths: got %v, want %v", discovery.Paths, want)
 	}
 	for _, path := range want {
-		if !index.Has(path) {
+		if !discovery.Index.Has(path) {
 			t.Fatalf("index omitted %q", path)
 		}
+	}
+	wantModules := []string{"go.mod", "nested/go.mod"}
+	if !reflect.DeepEqual(discovery.GoModules, wantModules) {
+		t.Fatalf("Go modules: got %v, want %v", discovery.GoModules, wantModules)
+	}
+	if discovery.Index.Has("go.mod") {
+		t.Fatal("go.mod must not become a source node")
 	}
 }
 

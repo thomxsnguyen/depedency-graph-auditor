@@ -2,8 +2,7 @@
 
 ## Status
 
-Proposed. This document defines the implementation sequence and boundaries;
-it does not implement or reorganize the current file-graph code.
+Implemented. The completed migration follows the boundaries defined below.
 
 ## Source Architecture
 

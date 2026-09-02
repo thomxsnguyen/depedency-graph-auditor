@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed architecture. This document defines a future design boundary only;
-it does not implement or reorganize the current file-graph code.
+Implemented by the scoped migration in
+[`docs/implementation/features/language-neutral-file-graph-implementation.md`](implementation/features/language-neutral-file-graph-implementation.md).
 
 ## Objective
 

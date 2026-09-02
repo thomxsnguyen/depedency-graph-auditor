@@ -255,6 +255,24 @@ func TestExecuteFileAnalysisHandlesEmptyProject(t *testing.T) {
 	}
 }
 
+func TestExecuteFileAnalysisReportsMissingRootGoModule(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "main.go", "package main\n")
+	output := filepath.Join(t.TempDir(), "file-graph.json")
+	report, err := executeFileAnalysis(
+		context.Background(), context.Background(), root, "go-project", output, time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Nodes) != 1 || report.Nodes[0].Path != "main.go" || len(report.Edges) != 0 {
+		t.Fatalf("graph: %+v", report)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != "go.mod" || !strings.Contains(report.Diagnostics[0].Message, "root go.mod is required") {
+		t.Fatalf("diagnostics: %+v", report.Diagnostics)
+	}
+}
+
 func TestExecuteFileAnalysisProducesOnePolyglotGraph(t *testing.T) {
 	root := t.TempDir()
 	writeProjectFile(t, root, "frontend/App.tsx", `import "./Button"`)
@@ -262,6 +280,11 @@ func TestExecuteFileAnalysisProducesOnePolyglotGraph(t *testing.T) {
 	writeProjectFile(t, root, "backend/__init__.py", "")
 	writeProjectFile(t, root, "backend/app.py", "from . import models\nimport requests\n")
 	writeProjectFile(t, root, "backend/models.py", "class Model:\n    pass\n")
+	writeProjectFile(t, root, "go.mod", "module example.com/polyglot\n")
+	writeProjectFile(t, root, "cmd/server/main.go", "package main\nimport \"example.com/polyglot/internal/config\"\n")
+	writeProjectFile(t, root, "internal/config/load.go", "package config\n")
+	writeProjectFile(t, root, "internal/config/types.go", "package config\n")
+	writeProjectFile(t, root, "internal/config/config_test.go", "package config_test\n")
 	writeProjectFile(t, root, "README.md", "unsupported")
 
 	output := filepath.Join(t.TempDir(), "polyglot-file-graph.json")
@@ -278,14 +301,20 @@ func TestExecuteFileAnalysisProducesOnePolyglotGraph(t *testing.T) {
 		{Path: "backend/__init__.py"},
 		{Path: "backend/app.py"},
 		{Path: "backend/models.py"},
+		{Path: "cmd/server/main.go"},
 		{Path: "frontend/App.tsx"},
 		{Path: "frontend/Button.tsx"},
+		{Path: "internal/config/config_test.go"},
+		{Path: "internal/config/load.go"},
+		{Path: "internal/config/types.go"},
 	}
 	if !reflect.DeepEqual(report.Nodes, wantNodes) {
 		t.Fatalf("nodes: got %+v, want %+v", report.Nodes, wantNodes)
 	}
 	wantEdges := []filegraph.Edge{
 		{From: "backend/app.py", To: "backend/models.py"},
+		{From: "cmd/server/main.go", To: "internal/config/load.go"},
+		{From: "cmd/server/main.go", To: "internal/config/types.go"},
 		{From: "frontend/App.tsx", To: "frontend/Button.tsx"},
 	}
 	if !reflect.DeepEqual(report.Edges, wantEdges) {
@@ -296,13 +325,19 @@ func TestExecuteFileAnalysisProducesOnePolyglotGraph(t *testing.T) {
 	}
 }
 
-func TestRunGitHubPythonFileAnalysis(t *testing.T) {
+func TestRunGitHubPolyglotFileAnalysis(t *testing.T) {
 	archive := repositoryZIP(t, map[string]string{
-		"acme-widget/src/widget/__init__.py": "",
-		"acme-widget/src/widget/main.py":     "from widget import models\nimport requests\n",
-		"acme-widget/src/widget/models.py":   "class Model:\n    pass\n",
-		"acme-widget/tests/test_models.py":   "from widget.models import Model\n",
-		"acme-widget/.venv/ignored.py":       "from widget import models\n",
+		"acme-widget/src/widget/__init__.py":                   "",
+		"acme-widget/src/widget/main.py":                       "from widget import models\nimport requests\n",
+		"acme-widget/src/widget/models.py":                     "class Model:\n    pass\n",
+		"acme-widget/tests/test_models.py":                     "from widget.models import Model\n",
+		"acme-widget/.venv/ignored.py":                         "from widget import models\n",
+		"acme-widget/go.mod":                                   "module example.com/widget\n",
+		"acme-widget/cmd/server/main.go":                       "package main\nimport \"example.com/widget/internal/config\"\n",
+		"acme-widget/internal/config/load.go":                  "package config\n",
+		"acme-widget/internal/config/types.go":                 "package config\n",
+		"acme-widget/internal/config/config_test.go":           "package config_test\n",
+		"acme-widget/vendor/example.com/dependency/ignored.go": "package dependency\n",
 	})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/repos/acme/widget/zipball" {
@@ -325,10 +360,12 @@ func TestRunGitHubPythonFileAnalysis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Root != "widget" || len(report.Nodes) != 4 {
+	if report.Root != "widget" || len(report.Nodes) != 8 {
 		t.Fatalf("report root/nodes: %+v", report)
 	}
 	wantEdges := []filegraph.Edge{
+		{From: "cmd/server/main.go", To: "internal/config/load.go"},
+		{From: "cmd/server/main.go", To: "internal/config/types.go"},
 		{From: "src/widget/main.py", To: "src/widget/models.py"},
 		{From: "tests/test_models.py", To: "src/widget/models.py"},
 	}
