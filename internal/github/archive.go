@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,17 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+)
+
+var (
+	// ErrRepositoryNotFound classifies a missing public repository or ref.
+	ErrRepositoryNotFound = errors.New("GitHub repository or ref was not found")
+	// ErrRateLimited classifies GitHub access restrictions and rate limits.
+	ErrRateLimited = errors.New("GitHub API rate limit or access restriction")
+	// ErrArchiveTooLarge classifies compressed or extracted archive limits.
+	ErrArchiveTooLarge = errors.New("GitHub repository archive exceeds its size limit")
+	// ErrUpstream classifies GitHub transport and unexpected response failures.
+	ErrUpstream = errors.New("GitHub API request failed")
 )
 
 const (
@@ -60,27 +72,27 @@ func (c *GitHubClient) FetchRepositoryZIP(ctx context.Context, repository Reposi
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("fetch GitHub repository archive for %s/%s: %w", repository.Owner, repository.Name, err)
+		return nil, fmt.Errorf("%w: fetch repository archive for %s/%s: %v", ErrUpstream, repository.Owner, repository.Name, err)
 	}
 	defer response.Body.Close()
 
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("GitHub repository %s/%s or ref %q was not found", repository.Owner, repository.Name, ref)
+		return nil, fmt.Errorf("%w: %s/%s ref %q", ErrRepositoryNotFound, repository.Owner, repository.Name, ref)
 	case http.StatusForbidden, http.StatusTooManyRequests:
-		return nil, fmt.Errorf("GitHub API rate limit or access restriction for %s/%s archive (status %d)", repository.Owner, repository.Name, response.StatusCode)
+		return nil, fmt.Errorf("%w for %s/%s archive (status %d)", ErrRateLimited, repository.Owner, repository.Name, response.StatusCode)
 	default:
-		return nil, fmt.Errorf("GitHub API returned status %d for %s/%s archive", response.StatusCode, repository.Owner, repository.Name)
+		return nil, fmt.Errorf("%w: status %d for %s/%s archive", ErrUpstream, response.StatusCode, repository.Owner, repository.Name)
 	}
 
 	limited := io.LimitReader(response.Body, maxArchiveBytes+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, fmt.Errorf("read GitHub repository archive for %s/%s: %w", repository.Owner, repository.Name, err)
+		return nil, fmt.Errorf("%w: read repository archive for %s/%s: %v", ErrUpstream, repository.Owner, repository.Name, err)
 	}
 	if int64(len(data)) > maxArchiveBytes {
-		return nil, fmt.Errorf("GitHub repository archive for %s/%s exceeds the 25 MiB limit", repository.Owner, repository.Name)
+		return nil, fmt.Errorf("%w: %s/%s exceeds the 25 MiB compressed limit", ErrArchiveTooLarge, repository.Owner, repository.Name)
 	}
 	return data, nil
 }
@@ -96,7 +108,7 @@ func ExtractRepositoryZIP(data []byte, destination string) (string, error) {
 		return "", fmt.Errorf("GitHub repository archive is empty")
 	}
 	if len(archive.File) > maxArchiveEntries {
-		return "", fmt.Errorf("GitHub repository archive exceeds the %d-entry limit", maxArchiveEntries)
+		return "", fmt.Errorf("%w: exceeds the %d-entry limit", ErrArchiveTooLarge, maxArchiveEntries)
 	}
 
 	absoluteDestination, err := filepath.Abs(destination)
@@ -120,10 +132,10 @@ func ExtractRepositoryZIP(data []byte, destination string) (string, error) {
 			return "", fmt.Errorf("GitHub repository archive contains multiple top-level roots")
 		}
 		if entry.UncompressedSize64 > uint64(maxExtractedFileBytes) {
-			return "", fmt.Errorf("archive entry %q exceeds the 20 MiB file limit", entry.Name)
+			return "", fmt.Errorf("%w: archive entry %q exceeds the 20 MiB file limit", ErrArchiveTooLarge, entry.Name)
 		}
 		if entry.UncompressedSize64 > uint64(maxExtractedTotalBytes)-totalBytes {
-			return "", fmt.Errorf("GitHub repository archive exceeds the 100 MiB extracted-size limit")
+			return "", fmt.Errorf("%w: exceeds the 100 MiB extracted-size limit", ErrArchiveTooLarge)
 		}
 		totalBytes += entry.UncompressedSize64
 
@@ -194,7 +206,7 @@ func extractRegularFile(entry *zip.File, target string) error {
 		return fmt.Errorf("close archive entry %q: %w", entry.Name, closeErr)
 	}
 	if written > maxExtractedFileBytes {
-		return fmt.Errorf("archive entry %q exceeds the 20 MiB file limit", entry.Name)
+		return fmt.Errorf("%w: archive entry %q exceeds the 20 MiB file limit", ErrArchiveTooLarge, entry.Name)
 	}
 	return nil
 }

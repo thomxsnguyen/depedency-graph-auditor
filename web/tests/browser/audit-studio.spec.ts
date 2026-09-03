@@ -43,6 +43,51 @@ test("switches to the complete file dependency graph and inspects a file", async
   await expect(inspector.getByText("unresolved local import", { exact: true })).toBeVisible()
 })
 
+test("analyzes a GitHub repository and replaces the file graph", async ({ page }, testInfo) => {
+  await page.route("**/api/file-graphs", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schemaVersion: 1,
+        root: "remote-repository",
+        nodes: [{ path: "src/main.py" }, { path: "src/models.py" }],
+        edges: [{ from: "src/main.py", to: "src/models.py" }],
+        diagnostics: [],
+      }),
+    })
+  })
+  await page.goto("/")
+  await page.getByRole("tab", { name: "Files" }).click()
+  if (testInfo.project.name === "mobile") {
+    await page.getByRole("button", { name: "Open file graph summary" }).click()
+  }
+  await page.getByLabel("GitHub repository URL").fill("https://github.com/owner/remote-repository")
+  await page.getByRole("button", { name: "Analyze repository" }).click()
+  await expect(page.getByRole("button", { name: "Analyzing repository…" })).toBeDisabled()
+  await expect(page.getByRole("heading", { name: "remote-repository" })).toBeVisible()
+  await expect(page.getByRole("group", { name: "src/main.py" })).toBeAttached()
+  await expect(page.getByLabel("File graph totals").getByText("1 resolved imports", { exact: true })).toBeVisible()
+})
+
+test("keeps the current file graph when repository analysis fails", async ({ page }, testInfo) => {
+  await page.route("**/api/file-graphs", (route) => route.fulfill({
+    status: 429,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "GitHub rate limited the request. Try again later." }),
+  }))
+  await page.goto("/")
+  await page.getByRole("tab", { name: "Files" }).click()
+  if (testInfo.project.name === "mobile") {
+    await page.getByRole("button", { name: "Open file graph summary" }).click()
+  }
+  await page.getByLabel("GitHub repository URL").fill("https://github.com/owner/repository")
+  await page.getByRole("button", { name: "Analyze repository" }).click()
+  await expect(page.getByRole("alert")).toHaveText("GitHub rate limited the request. Try again later.")
+  await expect(page.getByRole("group", { name: /frontend\/App\.tsx/ })).toBeAttached()
+})
+
 test("reset layout recovers a graph saved outside the viewport", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("dependency-audit-view:v4:classic-demo", JSON.stringify({

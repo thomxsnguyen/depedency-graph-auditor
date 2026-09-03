@@ -192,6 +192,7 @@ label:has(input:focus-visible) {
   padding: var(--space-6);
   background: var(--surface);
   min-width: 0;
+  overflow-y: auto;
 }
 
 .sidebar--left {
@@ -404,6 +405,57 @@ label:has(input:focus-visible) {
 
 .search-field__control:has(.search-field__clear) input {
   padding-right: 40px;
+}
+
+.repository-form {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
+}
+
+.repository-form label {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.repository-form label small {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+
+.repository-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.repository-form input[aria-invalid="true"] {
+  border-color: rgba(201, 52, 47, 0.52);
+}
+
+.repository-form input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.repository-form .button {
+  width: 100%;
+}
+
+.repository-form__error {
+  margin: 0;
+  color: var(--status-error);
+  font-size: 12px;
+  line-height: 17px;
 }
 
 .sidebar__hint,

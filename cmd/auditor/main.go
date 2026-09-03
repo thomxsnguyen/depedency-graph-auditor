@@ -21,10 +21,7 @@ import (
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/depfile"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/dlq"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph"
-	fileanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer"
-	goanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/golang"
-	"github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/javascript"
-	pythonanalyzer "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/analyzer/python"
+	filegraphservice "github.com/thomxsnguyen/mini-distributed-job-api/internal/filegraph/service"
 	githubsource "github.com/thomxsnguyen/mini-distributed-job-api/internal/github"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/gomod"
 	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
@@ -266,34 +263,26 @@ func runFileAnalysisWithClient(config cliConfig, shutdownTimeout time.Duration, 
 	)
 	defer stopSignals()
 
-	sourceRoot := config.input
-	reportRoot := ""
-	if config.isGitHub {
-		temporaryDirectory, err := os.MkdirTemp("", "auditor-github-*")
-		if err != nil {
-			return nil, fmt.Errorf("create temporary GitHub repository directory: %w", err)
-		}
-		defer os.RemoveAll(temporaryDirectory)
-
-		archive, err := githubClient.FetchRepositoryZIP(workCtx, config.repository, config.ref)
-		if err != nil {
-			return nil, err
-		}
-		sourceRoot, err = githubsource.ExtractRepositoryZIP(archive, temporaryDirectory)
-		if err != nil {
-			return nil, err
-		}
-		reportRoot = config.repository.Name
-	}
-
-	return executeFileAnalysis(
-		workCtx,
-		signalCtx,
-		sourceRoot,
-		reportRoot,
-		config.outputPath,
-		shutdownTimeout,
+	service := filegraphservice.New(githubClient, filegraphservice.Options{ShutdownTimeout: shutdownTimeout})
+	var (
+		report filegraph.Report
+		err    error
 	)
+	if config.isGitHub {
+		report, err = service.AnalyzeGitHub(signalCtx, filegraphservice.GitHubRequest{
+			RepositoryURL: config.input,
+			Ref:           config.ref,
+		})
+	} else {
+		report, err = service.AnalyzeDirectoryUntil(workCtx, signalCtx, config.input, "")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileGraphReport(config.outputPath, report); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }
 
 func executeFileAnalysis(
@@ -304,73 +293,11 @@ func executeFileAnalysis(
 	outputPath string,
 	shutdownTimeout time.Duration,
 ) (*filegraph.Report, error) {
-	discovery, err := filegraph.DiscoverRepository(root)
+	service := filegraphservice.New(nil, filegraphservice.Options{ShutdownTimeout: shutdownTimeout})
+	report, err := service.AnalyzeDirectoryUntil(workCtx, signalCtx, root, reportRoot)
 	if err != nil {
 		return nil, err
 	}
-	absoluteRoot, err := filepath.Abs(root)
-	if err != nil {
-		return nil, fmt.Errorf("filegraph: resolve project root %q: %w", root, err)
-	}
-	absoluteRoot = filepath.Clean(absoluteRoot)
-	moduleIndex, moduleDiagnostics, err := goanalyzer.BuildModuleIndex(
-		absoluteRoot,
-		discovery.Index,
-		discovery.GoModules,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	graphStore := filegraph.NewStore()
-	for _, path := range discovery.Paths {
-		graphStore.AddNode(filegraph.Node{Path: path})
-	}
-	for _, diagnostic := range moduleDiagnostics {
-		graphStore.AddDiagnostic(filegraph.Diagnostic{Path: diagnostic.Path, Message: diagnostic.Message})
-	}
-	if len(discovery.Paths) > 0 {
-		registry, err := fileanalyzer.NewRegistry(javascript.New(), pythonanalyzer.New(), goanalyzer.New(moduleIndex))
-		if err != nil {
-			return nil, err
-		}
-		handler, err := filegraph.NewHandler(absoluteRoot, discovery.Index, registry, graphStore)
-		if err != nil {
-			return nil, err
-		}
-		bufferSize := 100
-		if len(discovery.Paths) > bufferSize {
-			bufferSize = len(discovery.Paths)
-		}
-		q := queue.New(bufferSize)
-		pool := worker.New(10, q, handler)
-		for _, path := range discovery.Paths {
-			queued, err := filegraph.NewJob(absoluteRoot, path)
-			if err != nil {
-				return nil, err
-			}
-			if err := pool.Submit(queued); err != nil {
-				return nil, fmt.Errorf("filegraph: submit %q: %w", path, err)
-			}
-		}
-		pool.Start(workCtx)
-
-		select {
-		case <-pool.Done():
-		case <-signalCtx.Done():
-		}
-
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancelShutdown()
-		if err := pool.Shutdown(shutdownCtx); err != nil {
-			return nil, fmt.Errorf("filegraph: shutdown: %w", err)
-		}
-	}
-
-	if reportRoot == "" {
-		reportRoot = filepath.Base(absoluteRoot)
-	}
-	report := filegraph.GenerateReport(reportRoot, graphStore)
 	if err := writeFileGraphReport(outputPath, report); err != nil {
 		return nil, err
 	}

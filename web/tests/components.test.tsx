@@ -6,6 +6,7 @@ import { QueueStrip } from "../src/components/QueueStrip/QueueStrip"
 import { FileInspector } from "../src/components/FileInspector/FileInspector"
 import { FileSidebar } from "../src/components/FileSidebar/FileSidebar"
 import { GraphModeSelector } from "../src/components/GraphModeSelector/GraphModeSelector"
+import { GitHubFileGraphForm } from "../src/components/FileSidebar/GitHubFileGraphForm"
 import type { AuditPackage } from "../src/types/audit"
 
 const counts = { pending: 0, running: 0, retrying: 1, completed: 10, dead_lettered: 1 }
@@ -97,8 +98,12 @@ describe("Classic page components", () => {
         diagnosticCount={1}
         search=""
         open
+        repositorySubmitting={false}
+        repositoryError={null}
         onClose={vi.fn()}
         onSearch={onSearch}
+        onRepositorySubmit={vi.fn()}
+        onRepositoryChange={vi.fn()}
       />,
     )
     await user.type(screen.getByRole("searchbox"), "App.tsx")
@@ -110,8 +115,12 @@ describe("Classic page components", () => {
         diagnosticCount={1}
         search="App.tsx"
         open
+        repositorySubmitting={false}
+        repositoryError={null}
         onClose={vi.fn()}
         onSearch={onSearch}
+        onRepositorySubmit={vi.fn()}
+        onRepositoryChange={vi.fn()}
       />,
     )
     await user.click(screen.getByRole("button", { name: "Clear file search" }))
@@ -133,5 +142,42 @@ describe("Classic page components", () => {
     expect(screen.getByText("frontend/Button.tsx")).toBeInTheDocument()
     expect(screen.getByText("frontend/main.tsx")).toBeInTheDocument()
     expect(screen.getByText("unresolved local import")).toBeInTheDocument()
+  })
+
+  it("validates and submits a public GitHub repository", async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(
+      <GitHubFileGraphForm
+        submitting={false}
+        error={null}
+        onSubmit={onSubmit}
+        onChange={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Analyze repository" }))
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a GitHub repository URL.")
+    await user.type(screen.getByLabelText("GitHub repository URL"), "https://github.com/owner/repo")
+    await user.type(screen.getByLabelText(/Ref/), "main")
+    await user.click(screen.getByRole("button", { name: "Analyze repository" }))
+    expect(onSubmit).toHaveBeenCalledWith({
+      repositoryUrl: "https://github.com/owner/repo",
+      ref: "main",
+    })
+  })
+
+  it("disables repository inputs while analysis is running", () => {
+    render(
+      <GitHubFileGraphForm
+        submitting
+        error={null}
+        onSubmit={vi.fn()}
+        onChange={vi.fn()}
+      />,
+    )
+    expect(screen.getByLabelText("GitHub repository URL")).toBeDisabled()
+    expect(screen.getByLabelText(/Ref/)).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Analyzing repository…" })).toBeDisabled()
   })
 })

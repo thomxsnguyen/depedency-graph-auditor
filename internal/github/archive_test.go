@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,15 +50,22 @@ func TestFetchRepositoryZIP(t *testing.T) {
 }
 
 func TestFetchRepositoryZIPErrors(t *testing.T) {
-	for _, status := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusInternalServerError} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		kind   error
+	}{
+		{status: http.StatusNotFound, kind: ErrRepositoryNotFound},
+		{status: http.StatusForbidden, kind: ErrRateLimited},
+		{status: http.StatusInternalServerError, kind: ErrUpstream},
+	} {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-				writer.WriteHeader(status)
+				writer.WriteHeader(test.status)
 			}))
 			defer server.Close()
 			client := &GitHubClient{HTTPClient: server.Client(), BaseURL: server.URL}
-			if _, err := client.FetchRepositoryZIP(context.Background(), Repository{Owner: "owner", Name: "repo"}, ""); err == nil {
-				t.Fatalf("expected status %d error", status)
+			if _, err := client.FetchRepositoryZIP(context.Background(), Repository{Owner: "owner", Name: "repo"}, ""); !errors.Is(err, test.kind) {
+				t.Fatalf("status %d error: got %v, want kind %v", test.status, err, test.kind)
 			}
 		})
 	}
@@ -171,7 +179,7 @@ func TestFetchRepositoryZIPRejectsOversizedBody(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &GitHubClient{HTTPClient: server.Client(), BaseURL: server.URL}
-	if _, err := client.FetchRepositoryZIP(context.Background(), Repository{Owner: "owner", Name: "repo"}, ""); err == nil {
-		t.Fatal("expected archive size error")
+	if _, err := client.FetchRepositoryZIP(context.Background(), Repository{Owner: "owner", Name: "repo"}, ""); !errors.Is(err, ErrArchiveTooLarge) {
+		t.Fatalf("error: got %v, want archive-too-large kind", err)
 	}
 }

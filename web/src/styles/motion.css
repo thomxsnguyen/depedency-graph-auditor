@@ -10,6 +10,12 @@
     transform 140ms var(--ease-out);
 }
 
+.repository-form input {
+  transition:
+    border-color 140ms var(--ease-out),
+    box-shadow 160ms var(--ease-out);
+}
+
 .button:active,
 .icon-button:active {
   transform: scale(0.98);

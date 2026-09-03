@@ -10,6 +10,10 @@ import { QueueStrip } from "../components/QueueStrip/QueueStrip"
 import { TopBar } from "../components/TopBar/TopBar"
 import { FixtureAuditDataSource } from "../data/FixtureAuditDataSource"
 import { FixtureFileGraphDataSource } from "../data/FixtureFileGraphDataSource"
+import {
+  HttpRepositoryFileGraphDataSource,
+  type GitHubFileGraphRequest,
+} from "../data/RepositoryFileGraphDataSource"
 import { LocalGraphViewStore } from "../data/LocalGraphViewStore"
 import { findPath } from "../graph/graphSelectors"
 import {
@@ -29,6 +33,7 @@ import type { FileGraphSnapshot, GraphMode } from "../types/fileGraph"
 const auditId = "classic-demo"
 const dataSource = new FixtureAuditDataSource()
 const fileGraphDataSource = new FixtureFileGraphDataSource()
+const repositoryFileGraphDataSource = new HttpRepositoryFileGraphDataSource()
 const viewStore = new LocalGraphViewStore()
 const reduceViewHistory = historyReducer<GraphView, ViewAction>(viewReducer)
 
@@ -46,6 +51,9 @@ export function AuditWorkspace() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [filePositions, setFilePositions] = useState<Record<string, GraphPosition>>({})
   const [fileViewport, setFileViewport] = useState<Viewport | null>(null)
+  const [repositoryStatus, setRepositoryStatus] = useState<"idle" | "submitting" | "success" | "error">("idle")
+  const [repositoryError, setRepositoryError] = useState<string | null>(null)
+  const repositoryRequestRef = useRef<AbortController | null>(null)
   const summaryButtonRef = useRef<HTMLButtonElement>(null)
   const inspectorButtonRef = useRef<HTMLButtonElement>(null)
   const view = viewHistory.present
@@ -90,6 +98,8 @@ export function AuditWorkspace() {
   useEffect(() => {
     void loadFileGraph()
   }, [loadFileGraph])
+
+  useEffect(() => () => repositoryRequestRef.current?.abort(), [])
 
   useEffect(() => {
     if (!auditLoaded || runToken === 0) return
@@ -205,6 +215,32 @@ export function AuditWorkspace() {
     }
   }, [applyView, selectedFileNode, selectedPackage, view.inspectorOpen])
 
+  const analyzeRepository = useCallback((request: GitHubFileGraphRequest) => {
+    if (repositoryRequestRef.current) return
+    const controller = new AbortController()
+    repositoryRequestRef.current = controller
+    setRepositoryError(null)
+    setRepositoryStatus("submitting")
+    repositoryFileGraphDataSource.analyze(request, controller.signal)
+      .then((nextGraph) => {
+        setFileGraph(nextGraph)
+        setFileGraphStatus("ready")
+        setSelectedFilePath(null)
+        setFileSearch("")
+        setFilePositions({})
+        setFileViewport(null)
+        setRepositoryStatus("success")
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return
+        setRepositoryError(error instanceof Error ? error.message : "The GitHub repository could not be analyzed.")
+        setRepositoryStatus("error")
+      })
+      .finally(() => {
+        if (repositoryRequestRef.current === controller) repositoryRequestRef.current = null
+      })
+  }, [])
+
   if (loadError) {
     return (
       <main className="centered-state" role="alert">
@@ -234,7 +270,7 @@ export function AuditWorkspace() {
   return (
     <main className="app-shell">
       <TopBar
-        root={snapshot.root}
+        root={graphMode === "files" && fileGraph ? fileGraph.root : snapshot.root}
         source={graphMode === "dependencies" ? snapshot.source : "File dependencies · local demo"}
         reportUrl={snapshot.reportUrl}
         running={activeCount > 0}
@@ -298,8 +334,15 @@ export function AuditWorkspace() {
               diagnosticCount={fileCounts.diagnostics}
               search={fileSearch}
               open={view.summaryOpen}
+              repositorySubmitting={repositoryStatus === "submitting"}
+              repositoryError={repositoryError}
               onClose={closeSummary}
               onSearch={setFileSearch}
+              onRepositorySubmit={analyzeRepository}
+              onRepositoryChange={() => {
+                setRepositoryError(null)
+                if (repositoryStatus === "error") setRepositoryStatus("idle")
+              }}
             />
 
             {fileGraphStatus === "loading" ? (

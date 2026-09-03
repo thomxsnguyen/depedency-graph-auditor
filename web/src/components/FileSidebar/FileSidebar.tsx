@@ -1,4 +1,6 @@
 import { Search, X } from "lucide-react"
+import type { GitHubFileGraphRequest } from "../../data/RepositoryFileGraphDataSource"
+import { GitHubFileGraphForm } from "./GitHubFileGraphForm"
 
 interface FileSidebarProps {
   fileCount: number
@@ -6,8 +8,12 @@ interface FileSidebarProps {
   diagnosticCount: number
   search: string
   open: boolean
+  repositorySubmitting: boolean
+  repositoryError: string | null
   onClose: () => void
   onSearch: (value: string) => void
+  onRepositorySubmit: (request: GitHubFileGraphRequest) => void
+  onRepositoryChange: () => void
 }
 
 export function FileSidebar({
@@ -16,8 +22,12 @@ export function FileSidebar({
   diagnosticCount,
   search,
   open,
+  repositorySubmitting,
+  repositoryError,
   onClose,
   onSearch,
+  onRepositorySubmit,
+  onRepositoryChange,
 }: FileSidebarProps) {
   return (
     <aside className={`sidebar sidebar--left ${open ? "sidebar--open" : ""}`} aria-label="File graph summary and search">
@@ -40,6 +50,13 @@ export function FileSidebar({
         <span><i className="summary-mark" />{importCount} resolved imports</span>
         <span><i className="summary-mark summary-mark--warning" />{diagnosticCount} diagnostics</span>
       </div>
+
+      <GitHubFileGraphForm
+        submitting={repositorySubmitting}
+        error={repositoryError}
+        onSubmit={onRepositorySubmit}
+        onChange={onRepositoryChange}
+      />
 
       <label className="search-field">
         <span>Search files</span>
