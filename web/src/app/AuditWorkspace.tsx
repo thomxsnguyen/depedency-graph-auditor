@@ -17,6 +17,12 @@ import {
 import { LocalGraphViewStore } from "../data/LocalGraphViewStore"
 import { findPath } from "../graph/graphSelectors"
 import {
+  fileEntityId,
+  moduleEntityId,
+  modulePathForFile,
+  type DependencyHopScope,
+} from "../graph/hierarchicalFileGraph"
+import {
   diagnosticsForFile,
   fileGraphCounts,
   incomingFiles,
@@ -49,6 +55,9 @@ export function AuditWorkspace() {
   const [fileGraphStatus, setFileGraphStatus] = useState<"loading" | "ready" | "error">("loading")
   const [fileSearch, setFileSearch] = useState("")
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
+  const [selectedFileModulePath, setSelectedFileModulePath] = useState<string | null>(null)
+  const [expandedFileModulePaths, setExpandedFileModulePaths] = useState<ReadonlySet<string>>(() => new Set())
+  const [fileHopScope, setFileHopScope] = useState<DependencyHopScope>(1)
   const [filePositions, setFilePositions] = useState<Record<string, GraphPosition>>({})
   const [fileViewport, setFileViewport] = useState<Viewport | null>(null)
   const [repositoryStatus, setRepositoryStatus] = useState<"idle" | "submitting" | "success" | "error">("idle")
@@ -202,10 +211,38 @@ export function AuditWorkspace() {
 
   const selectFileNode = useCallback((path: string | null) => {
     setSelectedFilePath(path)
+    setSelectedFileModulePath(null)
+    if (path) setFileHopScope(1)
     if (path && window.matchMedia("(max-width: 1199px)").matches) {
       applyView({ type: "panel", panel: "inspectorOpen", value: true })
     }
   }, [applyView])
+
+  const selectFileModule = useCallback((path: string | null) => {
+    setSelectedFileModulePath(path)
+    setSelectedFilePath(null)
+    setFileHopScope(1)
+    if (view.inspectorOpen) applyView({ type: "panel", panel: "inspectorOpen", value: false })
+  }, [applyView, view.inspectorOpen])
+
+  const toggleFileModule = useCallback((modulePath: string) => {
+    const expanding = !expandedFileModulePaths.has(modulePath)
+    const nextExpanded = new Set(expandedFileModulePaths)
+    if (expanding) nextExpanded.add(modulePath)
+    else nextExpanded.delete(modulePath)
+    setExpandedFileModulePaths(nextExpanded)
+    setFilePositions((positions) => Object.fromEntries(
+      Object.entries(positions).filter(([id]) => expanding
+        ? id !== moduleEntityId(modulePath)
+        : !fileGraph?.nodes.some((node) => modulePathForFile(node.path) === modulePath && fileEntityId(node.path) === id)),
+    ))
+    if (expanding && selectedFileModulePath === modulePath) setSelectedFileModulePath(null)
+    if (!expanding && selectedFilePath && modulePathForFile(selectedFilePath) === modulePath) {
+      setSelectedFilePath(null)
+      setFileHopScope(1)
+      if (view.inspectorOpen) applyView({ type: "panel", panel: "inspectorOpen", value: false })
+    }
+  }, [applyView, expandedFileModulePaths, fileGraph?.nodes, selectedFileModulePath, selectedFilePath, view.inspectorOpen])
 
   const changeGraphMode = useCallback((mode: GraphMode) => {
     setGraphMode(mode)
@@ -226,6 +263,9 @@ export function AuditWorkspace() {
         setFileGraph(nextGraph)
         setFileGraphStatus("ready")
         setSelectedFilePath(null)
+        setSelectedFileModulePath(null)
+        setExpandedFileModulePaths(new Set())
+        setFileHopScope(1)
         setFileSearch("")
         setFilePositions({})
         setFileViewport(null)
@@ -370,10 +410,16 @@ export function AuditWorkspace() {
                 snapshot={fileGraph}
                 search={fileSearch}
                 selectedPath={selectedFilePath}
+                selectedModulePath={selectedFileModulePath}
+                expandedModulePaths={expandedFileModulePaths}
+                hopScope={fileHopScope}
                 positions={filePositions}
                 viewport={fileViewport}
                 onSelect={selectFileNode}
-                onPosition={(path, position) => setFilePositions((positions) => ({ ...positions, [path]: position }))}
+                onSelectModule={selectFileModule}
+                onToggleModule={toggleFileModule}
+                onHopScope={setFileHopScope}
+                onPosition={(id, position) => setFilePositions((positions) => ({ ...positions, [id]: position }))}
                 onViewport={setFileViewport}
                 onReset={() => {
                   setFilePositions({})

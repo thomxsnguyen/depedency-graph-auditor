@@ -7,7 +7,7 @@ const elk = new ELK({
 })
 
 export function layoutGraph(
-  nodes: readonly { id: string }[],
+  nodes: readonly { id: string; width?: number; height?: number }[],
   edges: readonly { id: string; source: string; target: string }[],
 ): Promise<Record<string, GraphPosition>> {
   if (nodes.length === 0) return Promise.resolve({})
@@ -21,7 +21,7 @@ export function layoutGraph(
       "elk.layered.spacing.nodeNodeBetweenLayers": "90",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
     },
-    children: nodes.map((node) => ({ id: node.id, width: 184, height: 68 })),
+    children: nodes.map((node) => ({ id: node.id, width: node.width ?? 184, height: node.height ?? 68 })),
     edges: edges.map((edge) => ({
       id: edge.id,
       sources: [edge.source],

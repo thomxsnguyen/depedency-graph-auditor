@@ -36,7 +36,9 @@ test("switches to the complete file dependency graph and inspects a file", async
   await expect(page.getByLabel("File graph totals").getByText("6 resolved imports", { exact: true })).toBeVisible()
 
   await page.getByRole("searchbox", { name: "Search files" }).fill("frontend/App.tsx")
+  await page.getByRole("button", { name: "Expand module frontend", exact: true }).click()
   await page.getByRole("button", { name: /frontend\/App\.tsx/ }).click()
+  await expect(page.getByRole("button", { name: "1 hop", pressed: true })).toBeVisible()
   const inspector = page.getByLabel("Selected file inspector", { exact: true })
   await expect(inspector.getByRole("heading", { name: "App.tsx" })).toBeVisible()
   await expect(inspector.getByText("frontend/components/Button.tsx", { exact: true })).toBeVisible()
@@ -67,7 +69,7 @@ test("analyzes a GitHub repository and replaces the file graph", async ({ page }
   await page.getByRole("button", { name: "Analyze repository" }).click()
   await expect(page.getByRole("button", { name: "Analyzing repository…" })).toBeDisabled()
   await expect(page.getByRole("heading", { name: "remote-repository" })).toBeVisible()
-  await expect(page.getByRole("group", { name: "src/main.py" })).toBeAttached()
+  await expect(page.getByRole("group", { name: /Module src, 2 files/ })).toBeAttached()
   await expect(page.getByLabel("File graph totals").getByText("1 resolved imports", { exact: true })).toBeVisible()
 })
 
@@ -85,7 +87,56 @@ test("keeps the current file graph when repository analysis fails", async ({ pag
   await page.getByLabel("GitHub repository URL").fill("https://github.com/owner/repository")
   await page.getByRole("button", { name: "Analyze repository" }).click()
   await expect(page.getByRole("alert")).toHaveText("GitHub rate limited the request. Try again later.")
+  await expect(page.getByRole("group", { name: /Module frontend,/ })).toBeAttached()
+})
+
+test("expands and collapses one file module without changing graph totals", async ({ page }) => {
+  await page.goto("/")
+  await page.getByRole("tab", { name: "Files" }).click()
+  await expect(page.getByRole("group", { name: /Module frontend, 1 file,/ })).toBeAttached()
+  await expect(page.getByRole("group", { name: /frontend\/App\.tsx/ })).toHaveCount(0)
+
+  await page.getByRole("button", { name: "Expand module frontend", exact: true }).click()
   await expect(page.getByRole("group", { name: /frontend\/App\.tsx/ })).toBeAttached()
+  await page.getByRole("button", { name: "Collapse module frontend", exact: true }).click()
+  await expect(page.getByRole("group", { name: /frontend\/App\.tsx/ })).toHaveCount(0)
+  await expect(page.getByRole("group", { name: /Module frontend, 1 file,/ })).toBeAttached()
+  await expect(page.getByLabel("File graph totals").getByText("6 resolved imports", { exact: true })).toBeVisible()
+})
+
+test("focuses an expanded file graph by one or two dependency hops", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Hop graph expansion is covered on desktop")
+  await page.route("**/api/file-graphs", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      schemaVersion: 1,
+      root: "hop-repository",
+      nodes: [
+        { path: "src/a/one.ts" },
+        { path: "src/b/two.ts" },
+        { path: "src/c/three.ts" },
+      ],
+      edges: [
+        { from: "src/a/one.ts", to: "src/b/two.ts" },
+        { from: "src/b/two.ts", to: "src/c/three.ts" },
+      ],
+      diagnostics: [],
+    }),
+  }))
+  await page.goto("/")
+  await page.getByRole("tab", { name: "Files" }).click()
+  await page.getByLabel("GitHub repository URL").fill("https://github.com/owner/hop-repository")
+  await page.getByRole("button", { name: "Analyze repository" }).click()
+  await expect(page.getByRole("heading", { name: "hop-repository" })).toBeVisible()
+
+  await page.getByRole("button", { name: "Expand module src/a" }).click()
+  await page.getByRole("button", { name: "Expand module src/b" }).click()
+  await page.getByRole("button", { name: "Expand module src/c" }).click()
+  await page.getByRole("button", { name: /src\/a\/one\.ts/ }).click()
+  await expect(page.getByRole("group", { name: /src\/c\/three\.ts/ })).toHaveCount(0)
+  await page.getByRole("button", { name: "2 hops" }).click()
+  await expect(page.getByRole("group", { name: /src\/c\/three\.ts/ })).toBeAttached()
 })
 
 test("reset layout recovers a graph saved outside the viewport", async ({ page }) => {

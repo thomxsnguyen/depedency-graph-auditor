@@ -1,22 +1,42 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react"
-import type { FileGraphSnapshot } from "../types/fileGraph"
 import type { GraphPosition } from "../types/graphView"
-import { fileMatchesSearch } from "./fileGraphSelectors"
+import { classifyFile, type FileCategory } from "./fileCategory"
+import type { VisibleFileGraph } from "./hierarchicalFileGraph"
 
 export interface FileNodeData extends Record<string, unknown> {
+  entityKind: "file"
   path: string
   fileName: string
   parentPath: string
+  category: FileCategory
   diagnosticCount: number
   selected: boolean
   searchMatch: boolean
   onSelect?: (path: string) => void
 }
 
-export type FileGraphFlowNode = Node<FileNodeData, "file">
+export interface ModuleNodeData extends Record<string, unknown> {
+  entityKind: "module"
+  path: string
+  fileCount: number
+  internalDependencyCount: number
+  diagnosticCount: number
+  selected: boolean
+  searchMatch: boolean
+  onSelect?: (path: string) => void
+  onToggle?: (path: string) => void
+}
+
+export type FileFlowNode = Node<FileNodeData, "file">
+export type ModuleFlowNode = Node<ModuleNodeData, "module">
+export type FileGraphFlowNode = FileFlowNode | ModuleFlowNode
 
 export function fileNodeId(path: string): string {
   return `file:${encodeURIComponent(path)}`
+}
+
+export function moduleNodeId(path: string): string {
+  return `module:${encodeURIComponent(path)}`
 }
 
 export function fileEdgeId(from: string, to: string): string {
@@ -30,51 +50,76 @@ function splitPath(path: string): { fileName: string; parentPath: string } {
 }
 
 export function mapFileGraph(
-  snapshot: FileGraphSnapshot,
+  visibleGraph: VisibleFileGraph,
   selectedPath: string | null,
+  selectedModulePath: string | null,
   search: string,
   positions: Record<string, GraphPosition>,
 ): { nodes: FileGraphFlowNode[]; edges: Edge[] } {
-  const diagnosticCounts = new Map<string, number>()
-  for (const diagnostic of snapshot.diagnostics) {
-    diagnosticCounts.set(diagnostic.path, (diagnosticCounts.get(diagnostic.path) ?? 0) + 1)
-  }
-
-  const nodes = snapshot.nodes.map<FileGraphFlowNode>((node, index) => {
-    const labels = splitPath(node.path)
-    const id = fileNodeId(node.path)
-    const searchMatch = fileMatchesSearch(node.path, search)
-    return {
-      id,
-      type: "file",
-      position: positions[node.path] ?? { x: (index % 4) * 240, y: Math.floor(index / 4) * 110 },
-      data: {
-        path: node.path,
-        ...labels,
-        diagnosticCount: diagnosticCounts.get(node.path) ?? 0,
-        selected: selectedPath === node.path,
-        searchMatch,
-      },
+  const nodes = visibleGraph.nodes.map<FileGraphFlowNode>((entity, index) => {
+    const selected = entity.kind === "file"
+      ? selectedPath === entity.path
+      : selectedModulePath === entity.path
+    const common = {
+      id: entity.id,
+      position: positions[entity.id] ?? { x: (index % 4) * 240, y: Math.floor(index / 4) * 110 },
       draggable: true,
       selectable: true,
       focusable: true,
       connectable: false,
       deletable: false,
-      selected: selectedPath === node.path,
-      className: search.trim() && !searchMatch ? "file-flow-node--dimmed" : "",
-      ariaLabel: `${node.path}${diagnosticCounts.has(node.path) ? `, ${diagnosticCounts.get(node.path)} diagnostics` : ""}`,
+      selected,
+      className: search.trim() && !entity.searchMatch ? "file-flow-node--dimmed" : "",
+    }
+
+    if (entity.kind === "module") {
+      return {
+        ...common,
+        type: "module",
+        data: {
+          entityKind: "module",
+          path: entity.path,
+          fileCount: entity.fileCount,
+          internalDependencyCount: entity.internalDependencyCount,
+          diagnosticCount: entity.diagnosticCount,
+          selected,
+          searchMatch: entity.searchMatch,
+        },
+        ariaLabel: `Module ${entity.path}, ${entity.fileCount} ${entity.fileCount === 1 ? "file" : "files"}, ${entity.internalDependencyCount} internal dependencies${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
+      }
+    }
+
+    return {
+      ...common,
+      type: "file",
+      data: {
+        entityKind: "file",
+        path: entity.path,
+        ...splitPath(entity.path),
+        category: classifyFile(entity.path),
+        diagnosticCount: entity.diagnosticCount,
+        selected,
+        searchMatch: entity.searchMatch,
+      },
+      ariaLabel: `${entity.path}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
     }
   })
 
-  const edges = snapshot.edges.map<Edge>((edge) => {
-    const connected = selectedPath !== null && (edge.from === selectedPath || edge.to === selectedPath)
+  const selectedId = selectedPath ? fileNodeId(selectedPath) : selectedModulePath ? moduleNodeId(selectedModulePath) : null
+  const edges = visibleGraph.edges.map<Edge>((edge) => {
+    const connected = selectedId !== null && (edge.from === selectedId || edge.to === selectedId)
     return {
-      id: fileEdgeId(edge.from, edge.to),
-      source: fileNodeId(edge.from),
-      target: fileNodeId(edge.to),
+      id: edge.id,
+      source: edge.from,
+      target: edge.to,
       type: "smoothstep",
+      label: edge.dependencyCount > 1 ? String(edge.dependencyCount) : undefined,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 },
       className: connected ? "file-edge file-edge--selected" : "file-edge",
+      style: { strokeWidth: Math.min(2.2, 1.2 + Math.log2(edge.dependencyCount) * 0.22) },
+      labelStyle: { fill: "#6e6e73", fontSize: 10, fontWeight: 600 },
+      labelBgStyle: { fill: "#f5f5f7", fillOpacity: 0.92 },
+      labelBgPadding: [4, 2],
       animated: false,
       focusable: false,
       deletable: false,

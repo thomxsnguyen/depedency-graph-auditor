@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { ReactFlowProvider } from "@xyflow/react"
 import { AuditSidebar } from "../src/components/AuditSidebar/AuditSidebar"
 import { NodeInspector } from "../src/components/NodeInspector/NodeInspector"
 import { QueueStrip } from "../src/components/QueueStrip/QueueStrip"
@@ -7,11 +8,83 @@ import { FileInspector } from "../src/components/FileInspector/FileInspector"
 import { FileSidebar } from "../src/components/FileSidebar/FileSidebar"
 import { GraphModeSelector } from "../src/components/GraphModeSelector/GraphModeSelector"
 import { GitHubFileGraphForm } from "../src/components/FileSidebar/GitHubFileGraphForm"
+import { FileNode } from "../src/components/FileGraphCanvas/FileNode"
+import { ModuleNode } from "../src/components/FileGraphCanvas/ModuleNode"
 import type { AuditPackage } from "../src/types/audit"
 
 const counts = { pending: 0, running: 0, retrying: 1, completed: 10, dead_lettered: 1 }
 
 describe("Classic page components", () => {
+  it("shows a file node category independently from diagnostics", () => {
+    render(
+      <ReactFlowProvider>
+        <FileNode
+          id="file:frontend%2FApp.tsx"
+          type="file"
+          data={{
+            entityKind: "file",
+            path: "frontend/App.tsx",
+            fileName: "App.tsx",
+            parentPath: "frontend",
+            category: "frontend",
+            diagnosticCount: 1,
+            selected: false,
+            searchMatch: true,
+          }}
+          selected={false}
+          dragging={false}
+          draggable
+          selectable
+          deletable={false}
+          isConnectable={false}
+          zIndex={0}
+          parentId={undefined}
+          positionAbsoluteX={0}
+          positionAbsoluteY={0}
+        />
+      </ReactFlowProvider>,
+    )
+    expect(screen.getByText("Frontend")).toBeInTheDocument()
+    expect(screen.getByLabelText("1 diagnostics")).toBeInTheDocument()
+  })
+
+  it("shows module counts and expands the requested module", async () => {
+    const user = userEvent.setup()
+    const onToggle = vi.fn()
+    render(
+      <ReactFlowProvider>
+        <ModuleNode
+          id="module:frontend%2Fcomponents"
+          type="module"
+          data={{
+            entityKind: "module",
+            path: "frontend/components",
+            fileCount: 12,
+            internalDependencyCount: 18,
+            diagnosticCount: 2,
+            selected: false,
+            searchMatch: true,
+            onToggle,
+          }}
+          selected={false}
+          dragging={false}
+          draggable
+          selectable
+          deletable={false}
+          isConnectable={false}
+          zIndex={0}
+          parentId={undefined}
+          positionAbsoluteX={0}
+          positionAbsoluteY={0}
+        />
+      </ReactFlowProvider>,
+    )
+    expect(screen.getByText("12 files · 18 internal")).toBeInTheDocument()
+    expect(screen.getByLabelText("2 diagnostics")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Expand module frontend/components" }))
+    expect(onToggle).toHaveBeenCalledWith("frontend/components")
+  })
+
   it("changes search and filter controls", async () => {
     const user = userEvent.setup()
     const onSearch = vi.fn()
