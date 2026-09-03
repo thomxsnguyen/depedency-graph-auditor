@@ -2,20 +2,33 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import type { Viewport } from "@xyflow/react"
 import { AuditSidebar } from "../components/AuditSidebar/AuditSidebar"
 import { GraphCanvas } from "../components/GraphCanvas/GraphCanvas"
+import { FileGraphCanvas } from "../components/FileGraphCanvas/FileGraphCanvas"
+import { FileInspector } from "../components/FileInspector/FileInspector"
+import { FileSidebar } from "../components/FileSidebar/FileSidebar"
 import { NodeInspector } from "../components/NodeInspector/NodeInspector"
 import { QueueStrip } from "../components/QueueStrip/QueueStrip"
 import { TopBar } from "../components/TopBar/TopBar"
 import { FixtureAuditDataSource } from "../data/FixtureAuditDataSource"
+import { FixtureFileGraphDataSource } from "../data/FixtureFileGraphDataSource"
 import { LocalGraphViewStore } from "../data/LocalGraphViewStore"
 import { findPath } from "../graph/graphSelectors"
+import {
+  diagnosticsForFile,
+  fileGraphCounts,
+  incomingFiles,
+  outgoingFiles,
+  selectedFile,
+} from "../graph/fileGraphSelectors"
 import { auditReducer } from "../state/auditReducer"
 import { createHistory, historyReducer } from "../state/historyReducer"
 import { viewReducer, type ViewAction } from "../state/viewReducer"
 import type { GraphPosition, GraphView } from "../types/graphView"
 import { initialGraphView } from "../types/graphView"
+import type { FileGraphSnapshot, GraphMode } from "../types/fileGraph"
 
 const auditId = "classic-demo"
 const dataSource = new FixtureAuditDataSource()
+const fileGraphDataSource = new FixtureFileGraphDataSource()
 const viewStore = new LocalGraphViewStore()
 const reduceViewHistory = historyReducer<GraphView, ViewAction>(viewReducer)
 
@@ -26,10 +39,29 @@ export function AuditWorkspace() {
   const [viewHydrated, setViewHydrated] = useState(false)
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [runToken, setRunToken] = useState(0)
+  const [graphMode, setGraphMode] = useState<GraphMode>("dependencies")
+  const [fileGraph, setFileGraph] = useState<FileGraphSnapshot | null>(null)
+  const [fileGraphStatus, setFileGraphStatus] = useState<"loading" | "ready" | "error">("loading")
+  const [fileSearch, setFileSearch] = useState("")
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
+  const [filePositions, setFilePositions] = useState<Record<string, GraphPosition>>({})
+  const [fileViewport, setFileViewport] = useState<Viewport | null>(null)
   const summaryButtonRef = useRef<HTMLButtonElement>(null)
   const inspectorButtonRef = useRef<HTMLButtonElement>(null)
   const view = viewHistory.present
   const auditLoaded = auditState !== null
+
+  const loadFileGraph = useCallback(() => {
+    return fileGraphDataSource.load()
+      .then((snapshot) => {
+        setFileGraph(snapshot)
+        setFileGraphStatus("ready")
+      })
+      .catch(() => {
+        setFileGraph(null)
+        setFileGraphStatus("error")
+      })
+  }, [])
 
   const applyView = useCallback((action: ViewAction) => {
     viewDispatch({ type: "apply", action })
@@ -54,6 +86,10 @@ export function AuditWorkspace() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    void loadFileGraph()
+  }, [loadFileGraph])
 
   useEffect(() => {
     if (!auditLoaded || runToken === 0) return
@@ -96,6 +132,26 @@ export function AuditWorkspace() {
     () => snapshot && view.selectedNodeId ? findPath(view.selectedNodeId, snapshot.edges) : [],
     [snapshot, view.selectedNodeId],
   )
+  const selectedFileNode = useMemo(
+    () => fileGraph ? selectedFile(fileGraph, selectedFilePath) : null,
+    [fileGraph, selectedFilePath],
+  )
+  const selectedFileIncoming = useMemo(
+    () => fileGraph && selectedFilePath ? incomingFiles(fileGraph, selectedFilePath) : [],
+    [fileGraph, selectedFilePath],
+  )
+  const selectedFileOutgoing = useMemo(
+    () => fileGraph && selectedFilePath ? outgoingFiles(fileGraph, selectedFilePath) : [],
+    [fileGraph, selectedFilePath],
+  )
+  const selectedFileDiagnostics = useMemo(
+    () => fileGraph && selectedFilePath ? diagnosticsForFile(fileGraph, selectedFilePath) : [],
+    [fileGraph, selectedFilePath],
+  )
+  const fileCounts = useMemo(
+    () => fileGraph ? fileGraphCounts(fileGraph) : { files: 0, imports: 0, diagnostics: 0 },
+    [fileGraph],
+  )
   const violationCount = snapshot?.packages.filter((packageRow) => packageRow.verdict === "policy_violation").length ?? 0
   const activeCount = snapshot ? snapshot.counts.pending + snapshot.counts.running + snapshot.counts.retrying : 0
 
@@ -134,6 +190,21 @@ export function AuditWorkspace() {
     applyView({ type: "viewport", viewport })
   }, [applyView])
 
+  const selectFileNode = useCallback((path: string | null) => {
+    setSelectedFilePath(path)
+    if (path && window.matchMedia("(max-width: 1199px)").matches) {
+      applyView({ type: "panel", panel: "inspectorOpen", value: true })
+    }
+  }, [applyView])
+
+  const changeGraphMode = useCallback((mode: GraphMode) => {
+    setGraphMode(mode)
+    const hasModeSelection = mode === "dependencies" ? Boolean(selectedPackage) : Boolean(selectedFileNode)
+    if (!hasModeSelection && view.inspectorOpen) {
+      applyView({ type: "panel", panel: "inspectorOpen", value: false })
+    }
+  }, [applyView, selectedFileNode, selectedPackage, view.inspectorOpen])
+
   if (loadError) {
     return (
       <main className="centered-state" role="alert">
@@ -164,56 +235,121 @@ export function AuditWorkspace() {
     <main className="app-shell">
       <TopBar
         root={snapshot.root}
-        source={snapshot.source}
+        source={graphMode === "dependencies" ? snapshot.source : "File dependencies · local demo"}
         reportUrl={snapshot.reportUrl}
         running={activeCount > 0}
         onRun={runDemo}
         onOpenSummary={() => applyView({ type: "panel", panel: "summaryOpen", value: true })}
         onOpenInspector={() => applyView({ type: "panel", panel: "inspectorOpen", value: true })}
-        hasSelection={Boolean(selectedPackage)}
+        hasSelection={graphMode === "dependencies" ? Boolean(selectedPackage) : Boolean(selectedFileNode)}
+        graphMode={graphMode}
+        onGraphModeChange={changeGraphMode}
         summaryButtonRef={summaryButtonRef}
         inspectorButtonRef={inspectorButtonRef}
       />
 
       <section className="workspace" aria-label="Dependency audit workspace">
-        <AuditSidebar
-          packageCount={snapshot.packages.length}
-          violationCount={violationCount}
-          counts={snapshot.counts}
-          filters={view.filters}
-          open={view.summaryOpen}
-          onClose={closeSummary}
-          onSearch={(value) => applyView({ type: "search", value })}
-          onFilter={(name, value) => applyView({ type: "filter", name, value })}
-        />
+        {graphMode === "dependencies" ? (
+          <>
+            <AuditSidebar
+              packageCount={snapshot.packages.length}
+              violationCount={violationCount}
+              counts={snapshot.counts}
+              filters={view.filters}
+              open={view.summaryOpen}
+              onClose={closeSummary}
+              onSearch={(value) => applyView({ type: "search", value })}
+              onFilter={(name, value) => applyView({ type: "filter", name, value })}
+            />
 
-        <GraphCanvas
-          snapshot={snapshot}
-          view={view}
-          canUndo={viewHistory.past.length > 0}
-          canRedo={viewHistory.future.length > 0}
-          onSelect={selectNode}
-          onCollapse={(nodeId) => applyView({ type: "collapse", nodeId })}
-          onPosition={positionNode}
-          onViewport={saveViewport}
-          onViewAction={applyView}
-          onUndo={() => viewDispatch({ type: "undo" })}
-          onRedo={() => viewDispatch({ type: "redo" })}
-          onResetLayout={() => applyView({ type: "reset-layout" })}
-        />
+            <GraphCanvas
+              snapshot={snapshot}
+              view={view}
+              canUndo={viewHistory.past.length > 0}
+              canRedo={viewHistory.future.length > 0}
+              onSelect={selectNode}
+              onCollapse={(nodeId) => applyView({ type: "collapse", nodeId })}
+              onPosition={positionNode}
+              onViewport={saveViewport}
+              onViewAction={applyView}
+              onUndo={() => viewDispatch({ type: "undo" })}
+              onRedo={() => viewDispatch({ type: "redo" })}
+              onResetLayout={() => applyView({ type: "reset-layout" })}
+            />
 
-        <NodeInspector
-          key={`${selectedPackage?.id ?? "none"}:${selectedPackage ? view.annotations[selectedPackage.id] ?? "" : ""}`}
-          root={snapshot.root}
-          packageRow={selectedPackage}
-          path={selectedPath}
-          edges={snapshot.edges}
-          annotation={selectedPackage ? view.annotations[selectedPackage.id] ?? "" : ""}
-          open={view.inspectorOpen}
-          saveStatus={saveStatus}
-          onClose={closeInspector}
-          onAnnotate={(text) => selectedPackage && applyView({ type: "annotate", nodeId: selectedPackage.id, text })}
-        />
+            <NodeInspector
+              key={`${selectedPackage?.id ?? "none"}:${selectedPackage ? view.annotations[selectedPackage.id] ?? "" : ""}`}
+              root={snapshot.root}
+              packageRow={selectedPackage}
+              path={selectedPath}
+              edges={snapshot.edges}
+              annotation={selectedPackage ? view.annotations[selectedPackage.id] ?? "" : ""}
+              open={view.inspectorOpen}
+              saveStatus={saveStatus}
+              onClose={closeInspector}
+              onAnnotate={(text) => selectedPackage && applyView({ type: "annotate", nodeId: selectedPackage.id, text })}
+            />
+          </>
+        ) : (
+          <>
+            <FileSidebar
+              fileCount={fileCounts.files}
+              importCount={fileCounts.imports}
+              diagnosticCount={fileCounts.diagnostics}
+              search={fileSearch}
+              open={view.summaryOpen}
+              onClose={closeSummary}
+              onSearch={setFileSearch}
+            />
+
+            {fileGraphStatus === "loading" ? (
+              <section className="graph-canvas" aria-label="File dependency graph canvas" aria-busy="true">
+                <div className="graph-empty" role="status"><strong>Loading file graph…</strong></div>
+              </section>
+            ) : fileGraphStatus === "error" || !fileGraph ? (
+              <section className="graph-canvas" aria-label="File dependency graph canvas">
+                <div className="graph-empty" role="alert">
+                  <strong>The file graph could not be displayed.</strong>
+                  <button
+                    className="button button--secondary"
+                    type="button"
+                    onClick={() => {
+                      setFileGraphStatus("loading")
+                      void loadFileGraph()
+                    }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <FileGraphCanvas
+                snapshot={fileGraph}
+                search={fileSearch}
+                selectedPath={selectedFilePath}
+                positions={filePositions}
+                viewport={fileViewport}
+                onSelect={selectFileNode}
+                onPosition={(path, position) => setFilePositions((positions) => ({ ...positions, [path]: position }))}
+                onViewport={setFileViewport}
+                onReset={() => {
+                  setFilePositions({})
+                  setFileViewport(null)
+                }}
+                onClearSearch={() => setFileSearch("")}
+              />
+            )}
+
+            <FileInspector
+              file={selectedFileNode}
+              incoming={selectedFileIncoming}
+              outgoing={selectedFileOutgoing}
+              diagnostics={selectedFileDiagnostics}
+              open={view.inspectorOpen}
+              onClose={closeInspector}
+            />
+          </>
+        )}
 
         {(view.summaryOpen || view.inspectorOpen) && (
           <button
@@ -233,7 +369,9 @@ export function AuditWorkspace() {
       />
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {activeCount > 0
+        {graphMode === "files"
+          ? `File dependency graph selected. ${fileCounts.files} files and ${fileCounts.imports} resolved imports.`
+          : activeCount > 0
           ? `${activeCount} dependency jobs remain active.`
           : `Audit complete. ${snapshot.counts.completed} jobs completed and ${snapshot.counts.dead_lettered} jobs were dead-lettered.`}
       </div>

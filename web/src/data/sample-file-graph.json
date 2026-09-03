@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "root": "personal-portfolio",
+  "nodes": [
+    { "path": "cmd/server/main.go" },
+    { "path": "frontend/App.tsx" },
+    { "path": "frontend/components/Button.tsx" },
+    { "path": "frontend/pages/Button.tsx" },
+    { "path": "internal/config/load.go" },
+    { "path": "internal/config/types.go" },
+    { "path": "scripts/report.py" },
+    { "path": "scripts/settings.py" },
+    { "path": "scripts/unused.py" }
+  ],
+  "edges": [
+    { "from": "cmd/server/main.go", "to": "internal/config/load.go" },
+    { "from": "cmd/server/main.go", "to": "internal/config/types.go" },
+    { "from": "frontend/App.tsx", "to": "frontend/components/Button.tsx" },
+    { "from": "frontend/pages/Button.tsx", "to": "frontend/components/Button.tsx" },
+    { "from": "internal/config/load.go", "to": "internal/config/types.go" },
+    { "from": "scripts/report.py", "to": "scripts/settings.py" }
+  ],
+  "diagnostics": [
+    {
+      "path": "frontend/App.tsx",
+      "import": "./missing",
+      "message": "unresolved local import"
+    }
+  ]
+}

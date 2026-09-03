@@ -29,6 +29,20 @@ test("filters packages and restores the graph", async ({ page }) => {
   await expect(page.getByLabel("Interactive dependency graph")).toBeVisible()
 })
 
+test("switches to the complete file dependency graph and inspects a file", async ({ page }) => {
+  await page.goto("/")
+  await page.getByRole("tab", { name: "Files" }).click()
+  await expect(page.getByLabel("Interactive file dependency graph")).toBeVisible()
+  await expect(page.getByLabel("File graph totals").getByText("6 resolved imports", { exact: true })).toBeVisible()
+
+  await page.getByRole("searchbox", { name: "Search files" }).fill("frontend/App.tsx")
+  await page.getByRole("button", { name: /frontend\/App\.tsx/ }).click()
+  const inspector = page.getByLabel("Selected file inspector", { exact: true })
+  await expect(inspector.getByRole("heading", { name: "App.tsx" })).toBeVisible()
+  await expect(inspector.getByText("frontend/components/Button.tsx", { exact: true })).toBeVisible()
+  await expect(inspector.getByText("unresolved local import", { exact: true })).toBeVisible()
+})
+
 test("reset layout recovers a graph saved outside the viewport", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("dependency-audit-view:v4:classic-demo", JSON.stringify({

@@ -1,4 +1,6 @@
 import { FileText, PanelLeft, PanelRight, Play, RotateCcw } from "lucide-react"
+import type { GraphMode } from "../../types/fileGraph"
+import { GraphModeSelector } from "../GraphModeSelector/GraphModeSelector"
 
 interface TopBarProps {
   root: string
@@ -9,6 +11,8 @@ interface TopBarProps {
   onOpenSummary: () => void
   onOpenInspector: () => void
   hasSelection: boolean
+  graphMode: GraphMode
+  onGraphModeChange: (mode: GraphMode) => void
   summaryButtonRef: React.RefObject<HTMLButtonElement | null>
   inspectorButtonRef: React.RefObject<HTMLButtonElement | null>
 }
@@ -22,6 +26,8 @@ export function TopBar({
   onOpenSummary,
   onOpenInspector,
   hasSelection,
+  graphMode,
+  onGraphModeChange,
   summaryButtonRef,
   inspectorButtonRef,
 }: TopBarProps) {
@@ -33,6 +39,10 @@ export function TopBar({
         <span className="source-label source-label--mobile">{source}</span>
       </div>
 
+      <div className="topbar__mode">
+        <GraphModeSelector mode={graphMode} onChange={onGraphModeChange} />
+      </div>
+
       <div className="topbar__actions">
         <span className="source-label">{source}</span>
         <button
@@ -40,7 +50,7 @@ export function TopBar({
           className="icon-button mobile-panel-trigger"
           type="button"
           onClick={onOpenSummary}
-          aria-label="Open audit summary and filters"
+          aria-label={graphMode === "dependencies" ? "Open audit summary and filters" : "Open file graph summary"}
         >
           <PanelLeft size={18} aria-hidden="true" />
         </button>
@@ -49,7 +59,7 @@ export function TopBar({
           className="icon-button mobile-panel-trigger"
           type="button"
           onClick={onOpenInspector}
-          aria-label="Open selected package inspector"
+          aria-label={graphMode === "dependencies" ? "Open selected package inspector" : "Open selected file inspector"}
           disabled={!hasSelection}
         >
           <PanelRight size={18} aria-hidden="true" />

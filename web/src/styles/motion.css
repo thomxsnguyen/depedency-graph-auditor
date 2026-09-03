@@ -1,6 +1,9 @@
 .button,
 .icon-button,
-.package-node {
+.package-node,
+.file-node,
+.graph-mode-selector button,
+.file-flow-node--dimmed {
   transition:
     background-color 140ms var(--ease-out),
     box-shadow 160ms var(--ease-out),
