@@ -315,6 +315,7 @@ function GraphCanvasInner(props: GraphCanvasProps) {
   return (
     <ReactFlow
       className={placingBox ? "graph-flow--placing" : ""}
+      proOptions={{ hideAttribution: true }}
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}

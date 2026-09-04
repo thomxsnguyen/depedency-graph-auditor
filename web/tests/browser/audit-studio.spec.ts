@@ -10,7 +10,7 @@ test("explores the fixture and opens the selected package inspector", async ({ p
   await page.goto("/")
   await expect(page.getByRole("heading", { name: "personal-portfolio" })).toBeVisible()
   await expect(page.getByLabel("Interactive dependency graph")).toBeVisible()
-  await expect(page.getByLabel("Queue counts").getByText("185", { exact: true })).toBeVisible()
+  await expect(page.getByLabel("Queue activity")).toHaveCount(0)
 
   await page.getByRole("searchbox").fill("argparse")
   await page.getByRole("group", { name: /argparse version 2.0.1/i }).click()
@@ -75,7 +75,7 @@ test("analyzes a GitHub repository and replaces the file graph", async ({ page }
   await expect(page.getByRole("button", { name: "Analyzing repository…" })).toBeDisabled()
   await expect(page.getByRole("heading", { name: "remote-repository" })).toBeVisible()
   await expect(page.getByRole("group", { name: /src, Entrypoints, 1 file/ })).toBeAttached()
-  await expect(page.getByRole("group", { name: /src, Domain, 1 file/ })).toBeAttached()
+  await expect(page.getByRole("group", { name: /src, Other, 1 file/ })).toBeAttached()
   await expect(page.getByLabel("File graph totals").getByText("1 resolved imports", { exact: true })).toBeVisible()
 })
 

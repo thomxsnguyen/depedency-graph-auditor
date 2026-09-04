@@ -6,7 +6,6 @@ import { FileGraphCanvas } from "../components/FileGraphCanvas/FileGraphCanvas"
 import { FileInspector } from "../components/FileInspector/FileInspector"
 import { FileSidebar } from "../components/FileSidebar/FileSidebar"
 import { NodeInspector } from "../components/NodeInspector/NodeInspector"
-import { QueueStrip } from "../components/QueueStrip/QueueStrip"
 import { TopBar } from "../components/TopBar/TopBar"
 import { FixtureAuditDataSource } from "../data/FixtureAuditDataSource"
 import { FixtureFileGraphDataSource } from "../data/FixtureFileGraphDataSource"
@@ -506,13 +505,6 @@ export function AuditWorkspace() {
           />
         )}
       </section>
-
-      <QueueStrip
-        counts={snapshot.counts}
-        events={auditState.recentEvents}
-        open={view.activityOpen}
-        onToggle={() => applyView({ type: "panel", panel: "activityOpen", value: !view.activityOpen })}
-      />
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {graphMode === "files"

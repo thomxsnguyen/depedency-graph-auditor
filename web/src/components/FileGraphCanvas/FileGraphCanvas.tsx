@@ -332,6 +332,7 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
 
   return (
     <ReactFlow
+      proOptions={{ hideAttribution: true }}
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
