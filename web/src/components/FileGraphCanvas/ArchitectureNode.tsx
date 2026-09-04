@@ -1,13 +1,14 @@
 import { memo } from "react"
 import { AlertTriangle, ChevronRight, Layers3 } from "lucide-react"
-import { Handle, Position, type NodeProps } from "@xyflow/react"
+import { type NodeProps } from "@xyflow/react"
 import type { ArchitectureFlowNode } from "../../graph/mapFileGraph"
+import { RelationshipHandles } from "./RelationshipHandles"
 
 export const ArchitectureNode = memo(function ArchitectureNode({ data, selected }: NodeProps<ArchitectureFlowNode>) {
   const hasDiagnostics = data.diagnosticCount > 0
   return (
     <div className={`architecture-node architecture-node--${data.lane} ${data.expanded ? "architecture-node--expanded" : ""} ${hasDiagnostics ? "architecture-node--diagnostic" : ""} ${selected || data.selected ? "architecture-node--selected" : ""}`}>
-      <Handle type="target" position={Position.Left} className="architecture-node__handle" isConnectable={false} />
+      <RelationshipHandles className="architecture-node__handle" />
       <div
         className="architecture-node__content"
         role="button"
@@ -46,7 +47,6 @@ export const ArchitectureNode = memo(function ArchitectureNode({ data, selected 
           <span>{data.expanded ? "Hide" : "Folders"}</span>
         </button>
       </div>
-      <Handle type="source" position={Position.Right} className="architecture-node__handle" isConnectable={false} />
     </div>
   )
 })

@@ -1,13 +1,14 @@
 import { memo } from "react"
 import { AlertTriangle, ChevronRight, FolderTree } from "lucide-react"
-import { Handle, Position, type NodeProps } from "@xyflow/react"
+import { type NodeProps } from "@xyflow/react"
 import type { DomainFlowNode } from "../../graph/mapFileGraph"
+import { RelationshipHandles } from "./RelationshipHandles"
 
 export const DomainNode = memo(function DomainNode({ data, selected }: NodeProps<DomainFlowNode>) {
   const hasDiagnostics = data.diagnosticCount > 0
   return (
     <div className={`domain-node domain-node--${data.lane} ${data.expanded ? "domain-node--expanded" : ""} ${hasDiagnostics ? "domain-node--diagnostic" : ""} ${selected || data.selected ? "domain-node--selected" : ""}`}>
-      <Handle type="target" position={Position.Left} className="domain-node__handle" isConnectable={false} />
+      <RelationshipHandles className="domain-node__handle" />
       <div
         className="domain-node__content"
         role="button"
@@ -46,7 +47,6 @@ export const DomainNode = memo(function DomainNode({ data, selected }: NodeProps
           <span>{data.expanded ? "Hide" : "Files"}</span>
         </button>
       </div>
-      <Handle type="source" position={Position.Right} className="domain-node__handle" isConnectable={false} />
     </div>
   )
 })

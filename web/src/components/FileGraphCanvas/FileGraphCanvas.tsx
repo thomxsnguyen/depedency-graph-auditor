@@ -13,7 +13,12 @@ import {
 import type { FileGraphSnapshot } from "../../types/fileGraph"
 import type { GraphPosition } from "../../types/graphView"
 import { layoutGraph } from "../../graph/layoutGraph"
-import { mapFileGraph, type FileGraphFlowNode } from "../../graph/mapFileGraph"
+import {
+  mapFileGraph,
+  relationshipStrokePattern,
+  type ConnectionDisplayMode,
+  type FileGraphFlowNode,
+} from "../../graph/mapFileGraph"
 import { fileMatchesSearch } from "../../graph/fileGraphSelectors"
 import { categoryDetails, classifyFile, FILE_CATEGORY_DETAILS } from "../../graph/fileCategory"
 import {
@@ -58,9 +63,14 @@ interface FileGraphCanvasProps {
 function FileCanvasControls({
   selectedPath,
   hopScope,
+  connectionMode,
   onHopScope,
+  onConnectionMode,
   onReset,
-}: Pick<FileGraphCanvasProps, "selectedPath" | "hopScope" | "onHopScope" | "onReset">) {
+}: Pick<FileGraphCanvasProps, "selectedPath" | "hopScope" | "onHopScope" | "onReset"> & {
+  connectionMode: ConnectionDisplayMode
+  onConnectionMode: (mode: ConnectionDisplayMode) => void
+}) {
   const flow = useReactFlow()
   return (
     <div className="graph-toolbar" aria-label="File graph controls">
@@ -77,6 +87,19 @@ function FileCanvasControls({
       <button className="icon-button" type="button" onClick={onReset} aria-label="Reset file graph layout">
         <RotateCcw size={17} aria-hidden="true" />
       </button>
+      <span className="toolbar-divider" aria-hidden="true" />
+      <div className="connection-mode" role="group" aria-label="Connection display">
+        {(["focused", "all"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            aria-pressed={connectionMode === mode}
+            onClick={() => onConnectionMode(mode)}
+          >
+            {mode === "focused" ? "Trace" : "All links"}
+          </button>
+        ))}
+      </div>
       {selectedPath && (
         <>
           <span className="toolbar-divider" aria-hidden="true" />
@@ -146,7 +169,17 @@ function RelationshipLegend({ relationships }: { relationships: ReadonlySet<stri
       <ul>
         {FILE_RELATIONSHIP_DETAILS.filter(({ relationship }) => relationships.has(relationship)).map(({ relationship, label, color }) => (
           <li key={relationship}>
-            <i style={{ backgroundColor: color }} aria-hidden="true" />
+            <svg width="20" height="8" viewBox="0 0 20 8" aria-hidden="true">
+              <line
+                x1="1"
+                y1="4"
+                x2="19"
+                y2="4"
+                stroke={color}
+                strokeWidth="2"
+                strokeDasharray={relationshipStrokePattern(relationship)}
+              />
+            </svg>
             <span>{label}</span>
           </li>
         ))}
@@ -159,6 +192,7 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
   const flow = useReactFlow()
   const onReset = props.onReset
   const [layoutRequest, setLayoutRequest] = useState(0)
+  const [connectionMode, setConnectionMode] = useState<ConnectionDisplayMode>("focused")
   const initialViewportRef = useRef(props.viewport)
   const completedInitialLayoutRef = useRef(false)
   const positionsRef = useRef(props.positions)
@@ -182,13 +216,23 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
     () => expandedArchitectureItems(props.snapshot, props.expandedArchitectureIds, props.expandedDomainIds),
     [props.expandedArchitectureIds, props.expandedDomainIds, props.snapshot],
   )
-  const relationships = useMemo(
-    () => new Set(visibleGraph.edges.map((edge) => edge.relationship)),
-    [visibleGraph.edges],
-  )
   const mapped = useMemo(
-    () => mapFileGraph(visibleGraph, props.selectedPath, props.selectedGroupId, props.search, props.positions),
-    [props.positions, props.search, props.selectedGroupId, props.selectedPath, visibleGraph],
+    () => mapFileGraph(
+      visibleGraph,
+      props.selectedPath,
+      props.selectedGroupId,
+      props.search,
+      props.positions,
+      connectionMode,
+    ),
+    [connectionMode, props.positions, props.search, props.selectedGroupId, props.selectedPath, visibleGraph],
+  )
+  const relationships = useMemo(
+    () => new Set(mapped.edges.map((edge) => {
+      const match = /file-edge--([^\s]+)/.exec(edge.className ?? "")
+      return match?.[1] ?? ""
+    }).filter(Boolean)),
+    [mapped.edges],
   )
   const interactiveNodes = useMemo(
     () => mapped.nodes.map((node): FileGraphFlowNode => {
@@ -282,6 +326,10 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
     props.onSelectGroup(null)
   }
 
+  const changeConnectionMode = (mode: ConnectionDisplayMode) => {
+    setConnectionMode(mode)
+  }
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -308,9 +356,17 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
       <FileCanvasControls
         selectedPath={props.selectedPath}
         hopScope={props.hopScope}
+        connectionMode={connectionMode}
         onHopScope={props.onHopScope}
+        onConnectionMode={changeConnectionMode}
         onReset={resetLayout}
       />
+      {connectionMode === "focused" && expansionItems.length === 0 && props.selectedPath === null && props.selectedGroupId === null && (
+        <aside className="connection-hint" aria-label="Connection guidance">
+          <strong>Flow runs left to right</strong>
+          <span>Select a group to trace only its incoming and outgoing links. Click the canvas to clear.</span>
+        </aside>
+      )}
       <ExpandedArchitectureControls items={expansionItems} onCollapse={props.onCollapseExpansion} />
       <FileCategoryLegend paths={props.snapshot.nodes.map((node) => node.path)} />
       <RelationshipLegend relationships={relationships} />

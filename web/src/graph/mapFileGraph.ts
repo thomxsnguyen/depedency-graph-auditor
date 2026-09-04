@@ -5,6 +5,7 @@ import { classifyFile, type FileCategory } from "./fileCategory"
 import {
   fileEntityId,
   relationshipDetails,
+  type FileRelationship,
   type VisibleFileGraph,
 } from "./hierarchicalFileGraph"
 
@@ -60,6 +61,17 @@ export type ArchitectureFlowNode = Node<ArchitectureNodeData, "architecture">
 export type DomainFlowNode = Node<DomainNodeData, "domain">
 export type FileFlowNode = Node<FileNodeData, "file">
 export type FileGraphFlowNode = ArchitectureFlowNode | DomainFlowNode | FileFlowNode
+export type ConnectionDisplayMode = "focused" | "all"
+
+export function relationshipStrokePattern(relationship: FileRelationship): string | undefined {
+  return {
+    main: undefined,
+    "cross-project": "10 6",
+    support: "2 5",
+    test: "5 4",
+    other: "3 6",
+  }[relationship]
+}
 
 export function fileNodeId(path: string): string {
   return fileEntityId(path)
@@ -77,6 +89,8 @@ export function mapFileGraph(
   selectedGroupId: string | null,
   search: string,
   positions: Record<string, GraphPosition>,
+  connectionMode: ConnectionDisplayMode = "focused",
+  hoveredNodeId: string | null = null,
 ): { nodes: FileGraphFlowNode[]; edges: Edge[] } {
   const domainsByArchitecture = new Map<string, typeof visibleGraph.nodes>()
   const filesByDomain = new Map<string, typeof visibleGraph.nodes>()
@@ -104,6 +118,34 @@ export function mapFileGraph(
     const domains = domainsByArchitecture.get(architectureId) ?? []
     if (domains.length === 0) return 96
     return 94 + domains.reduce((total, domain) => total + domainHeight(domain.id) + 12, 0) + 12
+  }
+
+  const selectedEntityId = selectedPath ? fileNodeId(selectedPath) : selectedGroupId
+  const activeEntityId = hoveredNodeId ?? selectedEntityId
+  const activeEntity = visibleGraph.nodes.find((entity) => entity.id === activeEntityId)
+  const activeIds = new Set<string>()
+  if (activeEntity) {
+    activeIds.add(activeEntity.id)
+    if (activeEntity.kind === "domain") activeIds.add(activeEntity.architectureId)
+    if (activeEntity.kind === "file") {
+      activeIds.add(activeEntity.domainId)
+      activeIds.add(activeEntity.architectureId)
+    }
+  }
+  const focusedEdges = new Set(visibleGraph.edges
+    .filter((edge) => activeIds.has(edge.from) || activeIds.has(edge.to))
+    .map((edge) => edge.id))
+  const relatedIds = new Set(activeIds)
+  for (const edge of visibleGraph.edges) {
+    if (!focusedEdges.has(edge.id)) continue
+    relatedIds.add(edge.from)
+    relatedIds.add(edge.to)
+  }
+  const isRelatedNode = (entity: VisibleFileGraph["nodes"][number]): boolean => {
+    if (relatedIds.has(entity.id)) return true
+    if (entity.kind === "domain") return relatedIds.has(entity.architectureId)
+    if (entity.kind === "file") return relatedIds.has(entity.domainId) || relatedIds.has(entity.architectureId)
+    return false
   }
 
   const nodes = visibleGraph.nodes.map<FileGraphFlowNode>((entity, index) => {
@@ -139,7 +181,12 @@ export function mapFileGraph(
       connectable: false,
       deletable: false,
       selected,
-      className: search.trim() && !entity.searchMatch ? "file-flow-node--dimmed" : "",
+      className: [
+        search.trim() && !entity.searchMatch ? "file-flow-node--dimmed" : "",
+        connectionMode === "focused" && activeIds.size > 0 && !isRelatedNode(entity)
+          ? "file-flow-node--connection-dimmed"
+          : "",
+      ].filter(Boolean).join(" "),
     }
 
     if (entity.kind === "architecture") {
@@ -221,37 +268,30 @@ export function mapFileGraph(
     }
   }
 
-  const selectedIds = new Set<string>()
-  if (selectedPath) {
-    const selectedFile = visibleGraph.nodes.find((node) => node.kind === "file" && node.path === selectedPath)
-    if (selectedFile?.kind === "file") {
-      selectedIds.add(selectedFile.id)
-      selectedIds.add(selectedFile.domainId)
-      selectedIds.add(selectedFile.architectureId)
-    } else {
-      selectedIds.add(fileNodeId(selectedPath))
-    }
-  } else if (selectedGroupId) {
-    selectedIds.add(selectedGroupId)
-    const selectedDomain = visibleGraph.nodes.find((node) => node.kind === "domain" && node.id === selectedGroupId)
-    if (selectedDomain?.kind === "domain") selectedIds.add(selectedDomain.architectureId)
-  }
-  const edges = visibleGraph.edges.map<Edge>((edge) => {
-    const connected = selectedIds.has(edge.from) || selectedIds.has(edge.to)
+  const displayedEdges = connectionMode === "all"
+    ? visibleGraph.edges
+    : visibleGraph.edges.filter((edge) => focusedEdges.has(edge.id))
+
+  const edges = displayedEdges.map<Edge>((edge) => {
+    const connected = focusedEdges.has(edge.id)
     const relationship = relationshipDetails(edge.relationship)
     const color = connected ? "#3f444a" : relationship.color
+    const opacity = connected ? 0.96 : 0.42
     return {
       id: edge.id,
       source: edge.from,
       target: edge.to,
       type: "smoothstep",
-      label: edge.dependencyCount > 1 ? String(edge.dependencyCount) : undefined,
-      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
+      sourceHandle: `source-${edge.relationship}`,
+      targetHandle: `target-${edge.relationship}`,
+      label: connected && edge.dependencyCount > 1 ? `${edge.dependencyCount} imports` : undefined,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 11, height: 11, color },
       className: `file-edge file-edge--${edge.relationship}${connected ? " file-edge--selected" : ""}`,
       style: {
         stroke: color,
-        strokeWidth: Math.min(2.2, 1.2 + Math.log2(edge.dependencyCount) * 0.22),
-        opacity: connected ? 1 : 0.76,
+        strokeWidth: connected ? 1.8 : Math.min(1.45, 1 + Math.log2(edge.dependencyCount) * 0.14),
+        strokeDasharray: relationshipStrokePattern(edge.relationship),
+        opacity,
       },
       labelStyle: { fill: "#6e6e73", fontSize: 10, fontWeight: 600 },
       labelBgStyle: { fill: "#f5f5f7", fillOpacity: 0.92 },

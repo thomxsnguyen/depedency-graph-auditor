@@ -10,6 +10,10 @@
     transform 140ms var(--ease-out);
 }
 
+.file-flow-node--connection-dimmed {
+  transition: opacity 120ms var(--ease-out);
+}
+
 .repository-form input {
   transition:
     border-color 140ms var(--ease-out),

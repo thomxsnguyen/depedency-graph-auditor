@@ -33,6 +33,10 @@ test("switches to the complete file dependency graph and inspects a file", async
   await page.goto("/")
   await page.getByRole("tab", { name: "Files" }).click()
   await expect(page.getByLabel("Interactive file dependency graph")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Trace", pressed: true })).toBeVisible()
+  await expect(page.getByLabel("Connection guidance")).toContainText("Flow runs left to right")
+  await page.getByRole("button", { name: "All links" }).click()
+  await expect(page.getByRole("button", { name: "All links", pressed: true })).toBeVisible()
   await expect(page.getByLabel("File graph totals").getByText("6 resolved imports", { exact: true })).toBeVisible()
 
   await page.getByRole("searchbox", { name: "Search files" }).fill("frontend/App.tsx")

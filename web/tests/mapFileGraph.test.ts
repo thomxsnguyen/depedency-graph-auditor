@@ -45,7 +45,7 @@ function fullyExpandedGraph(selectedPath: string | null = null, search = "") {
 
 describe("file graph mapping", () => {
   it("uses complete paths as stable identities and preserves edge direction", () => {
-    const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {})
+    const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {}, "all")
     expect(fileNodeId("src/Button.tsx")).not.toBe(fileNodeId("pages/Button.tsx"))
     expect(graph.nodes.map((node) => node.id)).toContain(fileNodeId("src/Button.tsx"))
     expect(graph.edges).toContainEqual(expect.objectContaining({
@@ -100,15 +100,28 @@ describe("file graph mapping", () => {
     const graph = mapFileGraph({
       ...visible,
       edges: visible.edges.map((edge) => ({ ...edge, dependencyCount: 2 })),
-    }, null, selectedId, "", {})
+    }, null, selectedId, "", {}, "all")
     expect(graph.nodes.find((node) => node.id === selectedId)).toMatchObject({
       type: "architecture",
       selected: true,
     })
-    expect(graph.edges[0]).toMatchObject({
-      label: "2",
+    const focusedEdge = graph.edges.find((edge) => edge.className?.includes("selected"))!
+    const sourceEdge = visible.edges.find((edge) => edge.id === focusedEdge.id)!
+    expect(focusedEdge).toMatchObject({
+      label: "2 imports",
       markerEnd: expect.objectContaining({ color: expect.any(String) }),
     })
+    expect(focusedEdge.sourceHandle).toBe(`source-${sourceEdge.relationship}`)
+    expect(focusedEdge.targetHandle).toBe(`target-${sourceEdge.relationship}`)
+  })
+
+  it("hides connections until focused and supports the complete view", () => {
+    const visible = buildHierarchicalFileGraph(snapshot, new Set(), new Set(), null, 1)
+    const focused = mapFileGraph(visible, null, null, "", {}, "focused")
+    const complete = mapFileGraph(visible, null, null, "", {}, "all")
+    expect(focused.edges).toHaveLength(0)
+    expect(complete.edges).toHaveLength(visible.edges.length)
+    expect(complete.edges.every((edge) => edge.style?.opacity === 0.42)).toBe(true)
   })
 
   it("selects sorted incoming, outgoing, diagnostic, and summary data", () => {
