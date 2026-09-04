@@ -26,12 +26,15 @@ interface VisibleGroupBase {
 export interface VisibleArchitectureNode extends VisibleGroupBase {
   kind: "architecture"
   label: string
+  domainCount: number
+  expanded: boolean
 }
 
 export interface VisibleDomainNode extends VisibleGroupBase {
   kind: "domain"
   architectureId: string
   domain: string
+  expanded: boolean
 }
 
 export interface VisibleFileNode {
@@ -176,13 +179,20 @@ function groupEntity(
     lane: architecture.lane,
   }
   if (kind === "architecture") {
-    return { ...common, kind, label: ARCHITECTURE_LAYER_LABELS[architecture.layer] }
+    return {
+      ...common,
+      kind,
+      label: ARCHITECTURE_LAYER_LABELS[architecture.layer],
+      domainCount: 0,
+      expanded: false,
+    }
   }
   return {
     ...common,
     kind,
     architectureId: architectureEntityId(architecture.project, architecture.layer),
     domain: architecture.domain,
+    expanded: false,
   }
 }
 
@@ -212,23 +222,32 @@ export function buildHierarchicalFileGraph(
 
   for (const [architectureId, architectureFiles] of [...filesByArchitecture].sort(([left], [right]) => left.localeCompare(right))) {
     const architecture = architectureByFile.get(architectureFiles[0])!
-    if (!expandedArchitectureIds.has(architectureId)) {
-      allNodes.push(groupEntity("architecture", architectureId, architecture, architectureFiles, snapshot, diagnostics, search))
-      representedFiles.set(architectureId, architectureFiles)
-      continue
-    }
-
     const domainEntries = [...filesByDomain]
       .filter(([, files]) => architectureByFile.get(files[0])?.project === architecture.project
         && architectureByFile.get(files[0])?.layer === architecture.layer)
       .sort(([left], [right]) => left.localeCompare(right))
+
+    allNodes.push({
+      ...groupEntity("architecture", architectureId, architecture, architectureFiles, snapshot, diagnostics, search),
+      kind: "architecture",
+      label: ARCHITECTURE_LAYER_LABELS[architecture.layer],
+      domainCount: domainEntries.length,
+      expanded: expandedArchitectureIds.has(architectureId),
+    })
+    representedFiles.set(architectureId, architectureFiles)
+    if (!expandedArchitectureIds.has(architectureId)) continue
+
     for (const [domainId, domainFiles] of domainEntries) {
       const domainArchitecture = architectureByFile.get(domainFiles[0])!
-      if (!expandedDomainIds.has(domainId)) {
-        allNodes.push(groupEntity("domain", domainId, domainArchitecture, domainFiles, snapshot, diagnostics, search))
-        representedFiles.set(domainId, domainFiles)
-        continue
-      }
+      allNodes.push({
+        ...groupEntity("domain", domainId, domainArchitecture, domainFiles, snapshot, diagnostics, search),
+        kind: "domain",
+        architectureId,
+        domain: domainArchitecture.domain,
+        expanded: expandedDomainIds.has(domainId),
+      })
+      representedFiles.set(domainId, domainFiles)
+      if (!expandedDomainIds.has(domainId)) continue
       for (const path of domainFiles) {
         const fileArchitecture = architectureByFile.get(path)!
         const id = fileEntityId(path)
@@ -251,9 +270,10 @@ export function buildHierarchicalFileGraph(
     }
   }
 
-  allNodes.sort((left, right) => left.id.localeCompare(right.id))
+  const kindOrder = { architecture: 0, domain: 1, file: 2 } as const
+  allNodes.sort((left, right) => kindOrder[left.kind] - kindOrder[right.kind] || left.id.localeCompare(right.id))
 
-  const visibleEndpoint = (path: string): string | null => {
+  const detailedEndpoint = (path: string): string | null => {
     const architecture = architectureByFile.get(path)
     if (!architecture) return null
     const architectureId = architectureEntityId(architecture.project, architecture.layer)
@@ -264,11 +284,15 @@ export function buildHierarchicalFileGraph(
 
   const aggregatedEdges = new Map<string, VisibleFileGraphEdge>()
   for (const edge of snapshot.edges) {
-    const from = visibleEndpoint(edge.from)
-    const to = visibleEndpoint(edge.to)
     const sourceArchitecture = architectureByFile.get(edge.from)
     const targetArchitecture = architectureByFile.get(edge.to)
-    if (!from || !to || from === to || !sourceArchitecture || !targetArchitecture) continue
+    if (!sourceArchitecture || !targetArchitecture) continue
+    const sourceArchitectureId = architectureEntityId(sourceArchitecture.project, sourceArchitecture.layer)
+    const targetArchitectureId = architectureEntityId(targetArchitecture.project, targetArchitecture.layer)
+    const crossesArchitecture = sourceArchitectureId !== targetArchitectureId
+    const from = crossesArchitecture ? sourceArchitectureId : detailedEndpoint(edge.from)
+    const to = crossesArchitecture ? targetArchitectureId : detailedEndpoint(edge.to)
+    if (!from || !to || from === to) continue
     const key = `${from}\u0000${to}`
     const current = aggregatedEdges.get(key)
     if (current) {
@@ -293,6 +317,14 @@ export function buildHierarchicalFileGraph(
     const inFocus = (representedFiles.get(node.id) ?? []).some((path) => focusedFiles.has(path))
     return inFocus || (searchActive && node.searchMatch) ? [node.id] : []
   }))
+  for (const node of allNodes) {
+    if (!visibleNodeIds.has(node.id)) continue
+    if (node.kind === "domain") visibleNodeIds.add(node.architectureId)
+    if (node.kind === "file") {
+      visibleNodeIds.add(node.domainId)
+      visibleNodeIds.add(node.architectureId)
+    }
+  }
 
   return {
     nodes: allNodes.filter((node) => visibleNodeIds.has(node.id)),

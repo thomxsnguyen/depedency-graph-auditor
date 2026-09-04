@@ -217,25 +217,32 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
       const current = new Map(currentNodes.map((node) => [node.id, node]))
       return interactiveNodes.map((node) => ({
         ...node,
-        position: props.positions[node.id] ?? current.get(node.id)?.position ?? node.position,
+        position: node.parentId
+          ? node.position
+          : props.positions[node.id] ?? current.get(node.id)?.position ?? node.position,
         selected: node.type === "file" ? node.data.path === props.selectedPath : node.id === props.selectedGroupId,
       }))
     })
   }, [interactiveNodes, mapped.edges, props.positions, props.selectedGroupId, props.selectedPath, setEdges, setNodes])
 
   const layoutNodes = useMemo(
-    () => visibleGraph.nodes.map((node) => ({
+    () => mapped.nodes.filter((node) => node.type === "architecture").map((node) => ({
       id: node.id,
-      width: 196,
-      height: node.kind === "file" ? 68 : 96,
-      rank: node.rank,
-      lane: node.lane,
+      width: typeof node.style?.width === "number" ? node.style.width : 260,
+      height: typeof node.style?.height === "number" ? node.style.height : 96,
+      rank: node.data.rank,
+      lane: node.data.lane,
     })),
-    [visibleGraph.nodes],
+    [mapped.nodes],
   )
   const layoutEdges = useMemo(
-    () => visibleGraph.edges.map((edge) => ({ id: edge.id, source: edge.from, target: edge.to })),
-    [visibleGraph.edges],
+    () => {
+      const architectureIds = new Set(layoutNodes.map((node) => node.id))
+      return mapped.edges
+        .filter((edge) => architectureIds.has(edge.source) && architectureIds.has(edge.target))
+        .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target }))
+    },
+    [layoutNodes, mapped.edges],
   )
 
   useEffect(() => {
@@ -246,7 +253,9 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
         if (!active) return
         setNodes((currentNodes) => currentNodes.map((node) => ({
           ...node,
-          position: positionsRef.current[node.id] ?? layoutPositions[node.id] ?? node.position,
+          position: node.parentId
+            ? node.position
+            : positionsRef.current[node.id] ?? layoutPositions[node.id] ?? node.position,
         })))
         const shouldFit = completedInitialLayoutRef.current || initialViewportRef.current === null
         completedInitialLayoutRef.current = true

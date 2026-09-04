@@ -6,7 +6,7 @@ import type { ArchitectureFlowNode } from "../../graph/mapFileGraph"
 export const ArchitectureNode = memo(function ArchitectureNode({ data, selected }: NodeProps<ArchitectureFlowNode>) {
   const hasDiagnostics = data.diagnosticCount > 0
   return (
-    <div className={`architecture-node architecture-node--${data.lane} ${hasDiagnostics ? "architecture-node--diagnostic" : ""} ${selected || data.selected ? "architecture-node--selected" : ""}`}>
+    <div className={`architecture-node architecture-node--${data.lane} ${data.expanded ? "architecture-node--expanded" : ""} ${hasDiagnostics ? "architecture-node--diagnostic" : ""} ${selected || data.selected ? "architecture-node--selected" : ""}`}>
       <Handle type="target" position={Position.Left} className="architecture-node__handle" isConnectable={false} />
       <div
         className="architecture-node__content"
@@ -31,18 +31,19 @@ export const ArchitectureNode = memo(function ArchitectureNode({ data, selected 
         )}
       </div>
       <div className="architecture-node__footer">
-        <span>{data.fileCount} {data.fileCount === 1 ? "file" : "files"} · {data.internalDependencyCount} internal</span>
+        <span>{data.domainCount} {data.domainCount === 1 ? "folder" : "folders"} · {data.fileCount} {data.fileCount === 1 ? "file" : "files"}</span>
         <button
           className="architecture-node__toggle nodrag nopan"
           type="button"
-          aria-label={`Expand ${data.label} in ${data.project}`}
+          aria-label={`${data.expanded ? "Collapse" : "Expand"} ${data.label} in ${data.project}`}
+          aria-expanded={data.expanded}
           onClick={(event) => {
             event.stopPropagation()
             data.onToggle?.(data.id, data.project)
           }}
         >
-          <ChevronRight size={14} aria-hidden="true" />
-          <span>Domains</span>
+          <ChevronRight className={data.expanded ? "architecture-node__chevron--expanded" : ""} size={14} aria-hidden="true" />
+          <span>{data.expanded ? "Hide" : "Folders"}</span>
         </button>
       </div>
       <Handle type="source" position={Position.Right} className="architecture-node__handle" isConnectable={false} />

@@ -69,6 +69,8 @@ describe("Classic page components", () => {
             layer: "presentation",
             layerLabel: "Presentation",
             label: "Presentation",
+            domainCount: 3,
+            expanded: false,
             fileCount: 12,
             internalDependencyCount: 18,
             diagnosticCount: 2,
@@ -91,7 +93,7 @@ describe("Classic page components", () => {
         />
       </ReactFlowProvider>,
     )
-    expect(screen.getByText("12 files · 18 internal")).toBeInTheDocument()
+    expect(screen.getByText("3 folders · 12 files")).toBeInTheDocument()
     expect(screen.getByLabelText("2 diagnostics")).toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Expand Presentation in frontend" }))
     expect(onToggle).toHaveBeenCalledWith("architecture:frontend:presentation", "frontend")
@@ -113,6 +115,7 @@ describe("Classic page components", () => {
             layer: "application",
             layerLabel: "Services",
             domain: "diagnostics",
+            expanded: false,
             fileCount: 4,
             internalDependencyCount: 3,
             diagnosticCount: 0,
@@ -135,7 +138,7 @@ describe("Classic page components", () => {
         />
       </ReactFlowProvider>,
     )
-    await user.click(screen.getByRole("button", { name: "Expand domain diagnostics in Services" }))
+    await user.click(screen.getByRole("button", { name: "Expand folder diagnostics in Services" }))
     expect(onToggle).toHaveBeenCalledWith(
       "domain:backend:application:diagnostics",
       "architecture:backend:application",

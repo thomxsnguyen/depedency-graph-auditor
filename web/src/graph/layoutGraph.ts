@@ -28,13 +28,6 @@ export function layoutGraph(
       test: 3,
       tooling: 4,
     }
-    const laneBase: Record<NonNullable<LayoutNode["lane"]>, number> = {
-      configuration: 0,
-      main: 180,
-      shared: 540,
-      test: 760,
-      tooling: 980,
-    }
     const grouped = new Map<string, LayoutNode[]>()
     for (const node of nodes) {
       const lane = node.lane ?? "main"
@@ -42,16 +35,42 @@ export function layoutGraph(
       const key = `${laneOrder[lane]}:${rank}`
       grouped.set(key, [...(grouped.get(key) ?? []), node])
     }
+    const laneHeight: Record<NonNullable<LayoutNode["lane"]>, number> = {
+      configuration: 0,
+      main: 0,
+      shared: 0,
+      test: 0,
+      tooling: 0,
+    }
+    for (const [key, group] of grouped) {
+      const laneValue = Number(key.split(":")[0])
+      const lane = (Object.keys(laneOrder) as Array<keyof typeof laneOrder>)
+        .find((candidate) => laneOrder[candidate] === laneValue) ?? "main"
+      const height = group.reduce((total, node) => total + Math.max(132, (node.height ?? 96) + 36), 0)
+      laneHeight[lane] = Math.max(laneHeight[lane], height)
+    }
+    const laneBase: Record<NonNullable<LayoutNode["lane"]>, number> = {
+      configuration: 0,
+      main: Math.max(180, laneHeight.configuration + 84),
+      shared: 0,
+      test: 0,
+      tooling: 0,
+    }
+    laneBase.shared = laneBase.main + Math.max(276, laneHeight.main) + 84
+    laneBase.test = laneBase.shared + Math.max(136, laneHeight.shared) + 84
+    laneBase.tooling = laneBase.test + Math.max(136, laneHeight.test) + 84
     const result: Record<string, GraphPosition> = {}
     for (const [key, group] of [...grouped].sort(([left], [right]) => left.localeCompare(right))) {
       const [laneValue, rankValue] = key.split(":").map(Number)
       const lane = (Object.keys(laneOrder) as Array<keyof typeof laneOrder>)
         .find((candidate) => laneOrder[candidate] === laneValue) ?? "main"
-      group.sort((left, right) => left.id.localeCompare(right.id)).forEach((node, index) => {
+      let laneOffset = 0
+      group.sort((left, right) => left.id.localeCompare(right.id)).forEach((node) => {
         result[node.id] = {
           x: rankValue * 286,
-          y: laneBase[lane] + index * 132,
+          y: laneBase[lane] + laneOffset,
         }
+        laneOffset += Math.max(132, (node.height ?? 96) + 36)
       })
     }
     return Promise.resolve(result)

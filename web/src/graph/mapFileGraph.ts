@@ -26,6 +26,8 @@ interface GroupNodeData extends Record<string, unknown> {
 export interface ArchitectureNodeData extends GroupNodeData {
   entityKind: "architecture"
   label: string
+  domainCount: number
+  expanded: boolean
   onToggle?: (id: string, project: string) => void
 }
 
@@ -33,6 +35,7 @@ export interface DomainNodeData extends GroupNodeData {
   entityKind: "domain"
   architectureId: string
   domain: string
+  expanded: boolean
   onToggle?: (id: string, architectureId: string) => void
 }
 
@@ -75,12 +78,51 @@ export function mapFileGraph(
   search: string,
   positions: Record<string, GraphPosition>,
 ): { nodes: FileGraphFlowNode[]; edges: Edge[] } {
+  const domainsByArchitecture = new Map<string, typeof visibleGraph.nodes>()
+  const filesByDomain = new Map<string, typeof visibleGraph.nodes>()
+  for (const entity of visibleGraph.nodes) {
+    if (entity.kind === "domain") {
+      domainsByArchitecture.set(entity.architectureId, [...(domainsByArchitecture.get(entity.architectureId) ?? []), entity])
+    } else if (entity.kind === "file") {
+      filesByDomain.set(entity.domainId, [...(filesByDomain.get(entity.domainId) ?? []), entity])
+    }
+  }
+  for (const children of [...domainsByArchitecture.values(), ...filesByDomain.values()]) {
+    children.sort((left, right) => left.id.localeCompare(right.id))
+  }
+
+  const domainHeight = (domainId: string): number => filesByDomain.has(domainId)
+    ? 88 + (filesByDomain.get(domainId)?.length ?? 0) * 78
+    : 82
+  const architectureHeight = (architectureId: string): number => {
+    const domains = domainsByArchitecture.get(architectureId) ?? []
+    if (domains.length === 0) return 96
+    return 94 + domains.reduce((total, domain) => total + domainHeight(domain.id) + 12, 0) + 12
+  }
+
   const nodes = visibleGraph.nodes.map<FileGraphFlowNode>((entity, index) => {
     const selected = entity.kind === "file" ? selectedPath === entity.path : selectedGroupId === entity.id
+    let position = positions[entity.id] ?? { x: entity.rank * 274, y: index * 104 }
+    let parentId: string | undefined
+    if (entity.kind === "domain") {
+      const siblings = domainsByArchitecture.get(entity.architectureId) ?? []
+      const siblingIndex = siblings.findIndex((sibling) => sibling.id === entity.id)
+      position = {
+        x: 18,
+        y: 82 + siblings.slice(0, siblingIndex).reduce((total, sibling) => total + domainHeight(sibling.id) + 12, 0),
+      }
+      parentId = entity.architectureId
+    } else if (entity.kind === "file") {
+      const siblings = filesByDomain.get(entity.domainId) ?? []
+      position = { x: 18, y: 70 + siblings.findIndex((sibling) => sibling.id === entity.id) * 78 }
+      parentId = entity.domainId
+    }
     const common = {
       id: entity.id,
-      position: positions[entity.id] ?? { x: entity.rank * 274, y: index * 104 },
-      draggable: true,
+      position,
+      parentId,
+      extent: parentId ? "parent" as const : undefined,
+      draggable: parentId === undefined,
       selectable: true,
       focusable: true,
       connectable: false,
@@ -100,6 +142,8 @@ export function mapFileGraph(
           layer: entity.layer,
           layerLabel: ARCHITECTURE_LAYER_LABELS[entity.layer],
           label: entity.label,
+          domainCount: entity.domainCount,
+          expanded: entity.expanded,
           fileCount: entity.fileCount,
           internalDependencyCount: entity.internalDependencyCount,
           diagnosticCount: entity.diagnosticCount,
@@ -124,6 +168,7 @@ export function mapFileGraph(
           layerLabel: ARCHITECTURE_LAYER_LABELS[entity.layer],
           architectureId: entity.architectureId,
           domain: entity.domain,
+          expanded: entity.expanded,
           fileCount: entity.fileCount,
           internalDependencyCount: entity.internalDependencyCount,
           diagnosticCount: entity.diagnosticCount,
@@ -132,7 +177,8 @@ export function mapFileGraph(
           rank: entity.rank,
           lane: entity.lane,
         },
-        ariaLabel: `${entity.project}, ${ARCHITECTURE_LAYER_LABELS[entity.layer]}, domain ${entity.domain}, ${entity.fileCount} ${entity.fileCount === 1 ? "file" : "files"}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
+        ariaLabel: `${entity.project}, ${ARCHITECTURE_LAYER_LABELS[entity.layer]}, folder ${entity.domain}, ${entity.fileCount} ${entity.fileCount === 1 ? "file" : "files"}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
+        style: { width: 224, height: domainHeight(entity.id) },
       }
     }
 
@@ -154,12 +200,31 @@ export function mapFileGraph(
         lane: entity.lane,
       },
       ariaLabel: `${entity.path}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
+      style: { width: 188 },
     }
   })
 
-  const selectedId = selectedPath ? fileNodeId(selectedPath) : selectedGroupId
+  for (const node of nodes) {
+    if (node.type === "architecture") node.style = { width: 260, height: architectureHeight(node.id) }
+  }
+
+  const selectedIds = new Set<string>()
+  if (selectedPath) {
+    const selectedFile = visibleGraph.nodes.find((node) => node.kind === "file" && node.path === selectedPath)
+    if (selectedFile?.kind === "file") {
+      selectedIds.add(selectedFile.id)
+      selectedIds.add(selectedFile.domainId)
+      selectedIds.add(selectedFile.architectureId)
+    } else {
+      selectedIds.add(fileNodeId(selectedPath))
+    }
+  } else if (selectedGroupId) {
+    selectedIds.add(selectedGroupId)
+    const selectedDomain = visibleGraph.nodes.find((node) => node.kind === "domain" && node.id === selectedGroupId)
+    if (selectedDomain?.kind === "domain") selectedIds.add(selectedDomain.architectureId)
+  }
   const edges = visibleGraph.edges.map<Edge>((edge) => {
-    const connected = selectedId !== null && (edge.from === selectedId || edge.to === selectedId)
+    const connected = selectedIds.has(edge.from) || selectedIds.has(edge.to)
     const relationship = relationshipDetails(edge.relationship)
     const color = connected ? "#3f444a" : relationship.color
     return {

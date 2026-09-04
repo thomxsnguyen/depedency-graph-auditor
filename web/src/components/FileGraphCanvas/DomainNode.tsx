@@ -6,7 +6,7 @@ import type { DomainFlowNode } from "../../graph/mapFileGraph"
 export const DomainNode = memo(function DomainNode({ data, selected }: NodeProps<DomainFlowNode>) {
   const hasDiagnostics = data.diagnosticCount > 0
   return (
-    <div className={`domain-node domain-node--${data.lane} ${hasDiagnostics ? "domain-node--diagnostic" : ""} ${selected || data.selected ? "domain-node--selected" : ""}`}>
+    <div className={`domain-node domain-node--${data.lane} ${data.expanded ? "domain-node--expanded" : ""} ${hasDiagnostics ? "domain-node--diagnostic" : ""} ${selected || data.selected ? "domain-node--selected" : ""}`}>
       <Handle type="target" position={Position.Left} className="domain-node__handle" isConnectable={false} />
       <div
         className="domain-node__content"
@@ -31,18 +31,19 @@ export const DomainNode = memo(function DomainNode({ data, selected }: NodeProps
         )}
       </div>
       <div className="domain-node__footer">
-        <span>{data.fileCount} {data.fileCount === 1 ? "file" : "files"} · {data.internalDependencyCount} internal</span>
+        <span>{data.fileCount} {data.fileCount === 1 ? "file" : "files"}</span>
         <button
           className="domain-node__toggle nodrag nopan"
           type="button"
-          aria-label={`Expand domain ${data.domain} in ${data.layerLabel}`}
+          aria-label={`${data.expanded ? "Collapse" : "Expand"} folder ${data.domain} in ${data.layerLabel}`}
+          aria-expanded={data.expanded}
           onClick={(event) => {
             event.stopPropagation()
             data.onToggle?.(data.id, data.architectureId)
           }}
         >
-          <ChevronRight size={14} aria-hidden="true" />
-          <span>Files</span>
+          <ChevronRight className={data.expanded ? "domain-node__chevron--expanded" : ""} size={14} aria-hidden="true" />
+          <span>{data.expanded ? "Hide" : "Files"}</span>
         </button>
       </div>
       <Handle type="source" position={Position.Right} className="domain-node__handle" isConnectable={false} />

@@ -48,10 +48,10 @@ describe("file graph mapping", () => {
     const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {})
     expect(fileNodeId("src/Button.tsx")).not.toBe(fileNodeId("pages/Button.tsx"))
     expect(graph.nodes.map((node) => node.id)).toContain(fileNodeId("src/Button.tsx"))
-    expect(graph.edges.find((edge) => edge.source === fileNodeId("src/App.tsx"))).toMatchObject({
-      source: fileNodeId("src/App.tsx"),
-      target: fileNodeId("src/Button.tsx"),
-    })
+    expect(graph.edges).toContainEqual(expect.objectContaining({
+      source: architectureEntityId("src", "entrypoint"),
+      target: architectureEntityId("src", "other"),
+    }))
   })
 
   it("groups diagnostics and highlights only resolved adjacent edges", () => {
@@ -78,10 +78,19 @@ describe("file graph mapping", () => {
 
   it("adds category and architecture metadata to mapped file nodes", () => {
     const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {})
-    expect(graph.nodes.find((node) => node.data.path === "pages/Button.tsx")?.data).toMatchObject({
+    const fileNode = graph.nodes.find((node) => node.data.path === "pages/Button.tsx")
+    expect(fileNode?.data).toMatchObject({
       category: "frontend",
       project: "pages",
       layer: "presentation",
+    })
+    expect(fileNode).toMatchObject({
+      parentId: domainEntityId("pages", "presentation", "General"),
+      draggable: false,
+    })
+    expect(graph.nodes.find((node) => node.id === domainEntityId("pages", "presentation", "General"))).toMatchObject({
+      parentId: architectureEntityId("pages", "presentation"),
+      draggable: false,
     })
   })
 

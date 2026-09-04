@@ -72,7 +72,10 @@ describe("hierarchical file graph", () => {
       kind: "domain",
       fileCount: 3,
     }))
-    expect(domains.nodes.some((node) => node.id === frontendArchitectureId)).toBe(false)
+    expect(domains.nodes).toContainEqual(expect.objectContaining({
+      id: frontendArchitectureId,
+      expanded: true,
+    }))
 
     const files = buildHierarchicalFileGraph(
       snapshot,
@@ -87,7 +90,13 @@ describe("hierarchical file graph", () => {
     }))
     expect(files.edges).toContainEqual(expect.objectContaining({
       from: fileEntityId("frontend/components/Button.tsx"),
+      to: fileEntityId("frontend/components/Card.tsx"),
+      relationship: "main",
+    }))
+    expect(files.edges).toContainEqual(expect.objectContaining({
+      from: frontendArchitectureId,
       to: backendServicesId,
+      dependencyCount: 2,
       relationship: "cross-project",
     }))
   })
@@ -134,7 +143,7 @@ describe("hierarchical file graph", () => {
       "frontend/pages/Home.tsx",
     ])
     expect(twoHops.nodes).toContainEqual(expect.objectContaining({ path: "backend/services/cache.py" }))
-    expect(all.nodes).toHaveLength(snapshot.nodes.length)
+    expect(all.nodes.filter((node) => node.kind === "file")).toHaveLength(snapshot.nodes.length)
   })
 
   it("retains a matching collapsed architecture group outside hop focus", () => {
