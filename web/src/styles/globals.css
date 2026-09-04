@@ -677,7 +677,8 @@ label:has(input:focus-visible) {
 .file-node {
   --file-category: #6b7280;
   position: relative;
-  width: 184px;
+  box-sizing: border-box;
+  width: 100%;
   min-height: 68px;
   padding: var(--space-3);
   border-radius: var(--radius-node);
@@ -897,13 +898,13 @@ label:has(input:focus-visible) {
 }
 
 .architecture-node--expanded {
-  background: rgba(248, 248, 250, 0.9);
-  box-shadow: inset 0 3px 0 var(--group-accent), inset 0 0 0 1px #d8d8dd, var(--shadow-node);
+  background: #f4f4f6;
+  box-shadow: inset 0 3px 0 var(--group-accent), inset 0 0 0 1px #c9c9cf, var(--shadow-node);
 }
 
 .domain-node--expanded {
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: inset 0 3px 0 var(--group-accent), inset 0 0 0 1px #dedee2;
+  background: #fff;
+  box-shadow: inset 0 3px 0 var(--group-accent), inset 0 0 0 1px #cfcfd5, 0 4px 12px rgba(0, 0, 0, 0.04);
 }
 
 .architecture-node--configuration,
@@ -1033,6 +1034,14 @@ label:has(input:focus-visible) {
   height: 7px !important;
   border: 2px solid var(--surface) !important;
   background: var(--group-accent) !important;
+}
+
+.architecture-node__handle {
+  top: 34px !important;
+}
+
+.domain-node__handle {
+  top: 32px !important;
 }
 
 .hop-scope {

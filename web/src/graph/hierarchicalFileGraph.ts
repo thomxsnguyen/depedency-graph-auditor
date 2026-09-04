@@ -273,13 +273,12 @@ export function buildHierarchicalFileGraph(
   const kindOrder = { architecture: 0, domain: 1, file: 2 } as const
   allNodes.sort((left, right) => kindOrder[left.kind] - kindOrder[right.kind] || left.id.localeCompare(right.id))
 
-  const detailedEndpoint = (path: string): string | null => {
+  const groupedEndpoint = (path: string): string | null => {
     const architecture = architectureByFile.get(path)
     if (!architecture) return null
     const architectureId = architectureEntityId(architecture.project, architecture.layer)
     if (!expandedArchitectureIds.has(architectureId)) return architectureId
-    const domainId = domainEntityId(architecture.project, architecture.layer, architecture.domain)
-    return expandedDomainIds.has(domainId) ? fileEntityId(path) : domainId
+    return domainEntityId(architecture.project, architecture.layer, architecture.domain)
   }
 
   const aggregatedEdges = new Map<string, VisibleFileGraphEdge>()
@@ -290,8 +289,8 @@ export function buildHierarchicalFileGraph(
     const sourceArchitectureId = architectureEntityId(sourceArchitecture.project, sourceArchitecture.layer)
     const targetArchitectureId = architectureEntityId(targetArchitecture.project, targetArchitecture.layer)
     const crossesArchitecture = sourceArchitectureId !== targetArchitectureId
-    const from = crossesArchitecture ? sourceArchitectureId : detailedEndpoint(edge.from)
-    const to = crossesArchitecture ? targetArchitectureId : detailedEndpoint(edge.to)
+    const from = crossesArchitecture ? sourceArchitectureId : groupedEndpoint(edge.from)
+    const to = crossesArchitecture ? targetArchitectureId : groupedEndpoint(edge.to)
     if (!from || !to || from === to) continue
     const key = `${from}\u0000${to}`
     const current = aggregatedEdges.get(key)

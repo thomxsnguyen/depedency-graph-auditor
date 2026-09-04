@@ -248,13 +248,14 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
   useEffect(() => {
     let active = true
     let fitFrame: number | null = null
+    const nestedPositions = new Map(interactiveNodes.map((node) => [node.id, node.position]))
     layoutGraph(layoutNodes, layoutEdges)
       .then((layoutPositions) => {
         if (!active) return
         setNodes((currentNodes) => currentNodes.map((node) => ({
           ...node,
           position: node.parentId
-            ? node.position
+            ? nestedPositions.get(node.id) ?? node.position
             : positionsRef.current[node.id] ?? layoutPositions[node.id] ?? node.position,
         })))
         const shouldFit = completedInitialLayoutRef.current || initialViewportRef.current === null
@@ -268,7 +269,7 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
       active = false
       if (fitFrame !== null) window.cancelAnimationFrame(fitFrame)
     }
-  }, [flow, layoutEdges, layoutNodes, layoutRequest, setNodes])
+  }, [flow, interactiveNodes, layoutEdges, layoutNodes, layoutRequest, setNodes])
 
   const resetLayout = useCallback(() => {
     positionsRef.current = {}

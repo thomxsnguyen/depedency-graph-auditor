@@ -88,11 +88,11 @@ describe("hierarchical file graph", () => {
       id: fileEntityId("frontend/components/Button.tsx"),
       kind: "file",
     }))
-    expect(files.edges).toContainEqual(expect.objectContaining({
-      from: fileEntityId("frontend/components/Button.tsx"),
-      to: fileEntityId("frontend/components/Card.tsx"),
-      relationship: "main",
-    }))
+    expect(files.nodes.find((node) => node.id === frontendDomainId)).toMatchObject({
+      internalDependencyCount: 3,
+      expanded: true,
+    })
+    expect(files.edges.some((edge) => edge.from.startsWith("file:") || edge.to.startsWith("file:"))).toBe(false)
     expect(files.edges).toContainEqual(expect.objectContaining({
       from: frontendArchitectureId,
       to: backendServicesId,

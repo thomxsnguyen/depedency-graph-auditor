@@ -35,6 +35,17 @@ export function layoutGraph(
       const key = `${laneOrder[lane]}:${rank}`
       grouped.set(key, [...(grouped.get(key) ?? []), node])
     }
+    const rankWidth = new Map<number, number>()
+    for (const node of nodes) {
+      const rank = node.rank ?? 3
+      rankWidth.set(rank, Math.max(rankWidth.get(rank) ?? 0, node.width ?? 300))
+    }
+    const rankX = new Map<number, number>()
+    let nextX = 0
+    for (const rank of [...rankWidth.keys()].sort((left, right) => left - right)) {
+      rankX.set(rank, nextX)
+      nextX += (rankWidth.get(rank) ?? 300) + 72
+    }
     const laneHeight: Record<NonNullable<LayoutNode["lane"]>, number> = {
       configuration: 0,
       main: 0,
@@ -67,7 +78,7 @@ export function layoutGraph(
       let laneOffset = 0
       group.sort((left, right) => left.id.localeCompare(right.id)).forEach((node) => {
         result[node.id] = {
-          x: rankValue * 286,
+          x: rankX.get(rankValue) ?? rankValue * 372,
           y: laneBase[lane] + laneOffset,
         }
         laneOffset += Math.max(132, (node.height ?? 96) + 36)

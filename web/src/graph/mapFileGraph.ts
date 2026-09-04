@@ -91,9 +91,15 @@ export function mapFileGraph(
     children.sort((left, right) => left.id.localeCompare(right.id))
   }
 
+  const fileColumnCount = (domainId: string): number => (filesByDomain.get(domainId)?.length ?? 0) > 6 ? 2 : 1
   const domainHeight = (domainId: string): number => filesByDomain.has(domainId)
-    ? 88 + (filesByDomain.get(domainId)?.length ?? 0) * 78
+    ? 88 + Math.ceil((filesByDomain.get(domainId)?.length ?? 0) / fileColumnCount(domainId)) * 78
     : 82
+  const architectureWidth = (architectureId: string): number => {
+    const hasWideFolder = (domainsByArchitecture.get(architectureId) ?? [])
+      .some((domain) => fileColumnCount(domain.id) === 2)
+    return hasWideFolder ? 520 : 300
+  }
   const architectureHeight = (architectureId: string): number => {
     const domains = domainsByArchitecture.get(architectureId) ?? []
     if (domains.length === 0) return 96
@@ -114,7 +120,12 @@ export function mapFileGraph(
       parentId = entity.architectureId
     } else if (entity.kind === "file") {
       const siblings = filesByDomain.get(entity.domainId) ?? []
-      position = { x: 18, y: 70 + siblings.findIndex((sibling) => sibling.id === entity.id) * 78 }
+      const siblingIndex = siblings.findIndex((sibling) => sibling.id === entity.id)
+      const columns = fileColumnCount(entity.domainId)
+      position = {
+        x: 18 + (siblingIndex % columns) * 238,
+        y: 70 + Math.floor(siblingIndex / columns) * 78,
+      }
       parentId = entity.domainId
     }
     const common = {
@@ -178,7 +189,7 @@ export function mapFileGraph(
           lane: entity.lane,
         },
         ariaLabel: `${entity.project}, ${ARCHITECTURE_LAYER_LABELS[entity.layer]}, folder ${entity.domain}, ${entity.fileCount} ${entity.fileCount === 1 ? "file" : "files"}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
-        style: { width: 224, height: domainHeight(entity.id) },
+        style: { width: architectureWidth(entity.architectureId) - 36, height: domainHeight(entity.id) },
       }
     }
 
@@ -200,12 +211,14 @@ export function mapFileGraph(
         lane: entity.lane,
       },
       ariaLabel: `${entity.path}${entity.diagnosticCount ? `, ${entity.diagnosticCount} diagnostics` : ""}`,
-      style: { width: 188 },
+      style: { width: 220 },
     }
   })
 
   for (const node of nodes) {
-    if (node.type === "architecture") node.style = { width: 260, height: architectureHeight(node.id) }
+    if (node.type === "architecture") {
+      node.style = { width: architectureWidth(node.id), height: architectureHeight(node.id) }
+    }
   }
 
   const selectedIds = new Set<string>()
