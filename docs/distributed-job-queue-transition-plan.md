@@ -151,6 +151,9 @@ The existing system builds and has a recoverable Git checkpoint.
 
 ### Phase 1: Define contracts before implementation
 
+Status: complete. The accepted contract is recorded in
+[`docs/adr/0001-job-service-contracts.md`](adr/0001-job-service-contracts.md).
+
 Write an architecture decision record defining:
 
 - Job states and valid transitions
