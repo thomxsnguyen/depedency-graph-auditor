@@ -17,10 +17,11 @@ import {
 import { LocalGraphViewStore } from "../data/LocalGraphViewStore"
 import { findPath } from "../graph/graphSelectors"
 import {
-  fileEntityId,
-  moduleEntityId,
-  modulePathForFile,
+  architectureEntityId,
+  architectureForFile,
+  domainEntityId,
   type DependencyHopScope,
+  type ExpandedArchitectureItem,
 } from "../graph/hierarchicalFileGraph"
 import {
   diagnosticsForFile,
@@ -55,8 +56,9 @@ export function AuditWorkspace() {
   const [fileGraphStatus, setFileGraphStatus] = useState<"loading" | "ready" | "error">("loading")
   const [fileSearch, setFileSearch] = useState("")
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
-  const [selectedFileModulePath, setSelectedFileModulePath] = useState<string | null>(null)
-  const [expandedFileModulePaths, setExpandedFileModulePaths] = useState<ReadonlySet<string>>(() => new Set())
+  const [selectedFileGroupId, setSelectedFileGroupId] = useState<string | null>(null)
+  const [expandedArchitectureIds, setExpandedArchitectureIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [expandedDomainIds, setExpandedDomainIds] = useState<ReadonlySet<string>>(() => new Set())
   const [fileHopScope, setFileHopScope] = useState<DependencyHopScope>(1)
   const [filePositions, setFilePositions] = useState<Record<string, GraphPosition>>({})
   const [fileViewport, setFileViewport] = useState<Viewport | null>(null)
@@ -211,38 +213,89 @@ export function AuditWorkspace() {
 
   const selectFileNode = useCallback((path: string | null) => {
     setSelectedFilePath(path)
-    setSelectedFileModulePath(null)
+    setSelectedFileGroupId(null)
     if (path) setFileHopScope(1)
     if (path && window.matchMedia("(max-width: 1199px)").matches) {
       applyView({ type: "panel", panel: "inspectorOpen", value: true })
     }
   }, [applyView])
 
-  const selectFileModule = useCallback((path: string | null) => {
-    setSelectedFileModulePath(path)
+  const selectFileGroup = useCallback((id: string | null) => {
+    setSelectedFileGroupId(id)
     setSelectedFilePath(null)
     setFileHopScope(1)
     if (view.inspectorOpen) applyView({ type: "panel", panel: "inspectorOpen", value: false })
   }, [applyView, view.inspectorOpen])
 
-  const toggleFileModule = useCallback((modulePath: string) => {
-    const expanding = !expandedFileModulePaths.has(modulePath)
-    const nextExpanded = new Set(expandedFileModulePaths)
-    if (expanding) nextExpanded.add(modulePath)
-    else nextExpanded.delete(modulePath)
-    setExpandedFileModulePaths(nextExpanded)
-    setFilePositions((positions) => Object.fromEntries(
-      Object.entries(positions).filter(([id]) => expanding
-        ? id !== moduleEntityId(modulePath)
-        : !fileGraph?.nodes.some((node) => modulePathForFile(node.path) === modulePath && fileEntityId(node.path) === id)),
-    ))
-    if (expanding && selectedFileModulePath === modulePath) setSelectedFileModulePath(null)
-    if (!expanding && selectedFilePath && modulePathForFile(selectedFilePath) === modulePath) {
+  const clearHiddenFileSelection = useCallback((nextArchitectureIds: ReadonlySet<string>, nextDomainIds: ReadonlySet<string>) => {
+    if (!selectedFilePath) return
+    const architecture = architectureForFile(selectedFilePath)
+    const architectureId = architectureEntityId(architecture.project, architecture.layer)
+    const domainId = domainEntityId(architecture.project, architecture.layer, architecture.domain)
+    if (!nextArchitectureIds.has(architectureId) || !nextDomainIds.has(domainId)) {
       setSelectedFilePath(null)
       setFileHopScope(1)
       if (view.inspectorOpen) applyView({ type: "panel", panel: "inspectorOpen", value: false })
     }
-  }, [applyView, expandedFileModulePaths, fileGraph?.nodes, selectedFileModulePath, selectedFilePath, view.inspectorOpen])
+  }, [applyView, selectedFilePath, view.inspectorOpen])
+
+  const toggleArchitecture = useCallback((id: string, project: string) => {
+    const nextArchitectureIds = new Set(expandedArchitectureIds)
+    const nextDomainIds = new Set(expandedDomainIds)
+    const collapsing = nextArchitectureIds.has(id)
+    const architectureById = new Map((fileGraph?.nodes ?? []).map((node) => {
+      const architecture = architectureForFile(node.path)
+      return [architectureEntityId(architecture.project, architecture.layer), architecture] as const
+    }))
+    for (const expandedId of nextArchitectureIds) {
+      if (expandedId === id || (!collapsing && architectureById.get(expandedId)?.project === project)) {
+        nextArchitectureIds.delete(expandedId)
+        for (const node of fileGraph?.nodes ?? []) {
+          const architecture = architectureForFile(node.path)
+          if (architectureEntityId(architecture.project, architecture.layer) === expandedId) {
+            nextDomainIds.delete(domainEntityId(architecture.project, architecture.layer, architecture.domain))
+          }
+        }
+      }
+    }
+    if (!collapsing) nextArchitectureIds.add(id)
+    setExpandedArchitectureIds(nextArchitectureIds)
+    setExpandedDomainIds(nextDomainIds)
+    setSelectedFileGroupId(null)
+    clearHiddenFileSelection(nextArchitectureIds, nextDomainIds)
+  }, [clearHiddenFileSelection, expandedArchitectureIds, expandedDomainIds, fileGraph?.nodes])
+
+  const toggleDomain = useCallback((id: string, architectureId: string) => {
+    const nextDomainIds = new Set(expandedDomainIds)
+    const collapsing = nextDomainIds.has(id)
+    for (const expandedId of nextDomainIds) {
+      const belongsToArchitecture = (fileGraph?.nodes ?? []).some((node) => {
+        const architecture = architectureForFile(node.path)
+        return domainEntityId(architecture.project, architecture.layer, architecture.domain) === expandedId
+          && architectureEntityId(architecture.project, architecture.layer) === architectureId
+      })
+      if (expandedId === id || (!collapsing && belongsToArchitecture)) nextDomainIds.delete(expandedId)
+    }
+    if (!collapsing) nextDomainIds.add(id)
+    setExpandedDomainIds(nextDomainIds)
+    setSelectedFileGroupId(null)
+    clearHiddenFileSelection(expandedArchitectureIds, nextDomainIds)
+  }, [clearHiddenFileSelection, expandedArchitectureIds, expandedDomainIds, fileGraph?.nodes])
+
+  const collapseFileExpansion = useCallback((item: ExpandedArchitectureItem) => {
+    for (const node of fileGraph?.nodes ?? []) {
+      const architecture = architectureForFile(node.path)
+      const architectureId = architectureEntityId(architecture.project, architecture.layer)
+      if (item.kind === "architecture" && architectureId === item.id) {
+        toggleArchitecture(item.id, architecture.project)
+        return
+      }
+      if (item.kind === "domain" && domainEntityId(architecture.project, architecture.layer, architecture.domain) === item.id) {
+        toggleDomain(item.id, architectureId)
+        return
+      }
+    }
+  }, [fileGraph?.nodes, toggleArchitecture, toggleDomain])
 
   const changeGraphMode = useCallback((mode: GraphMode) => {
     setGraphMode(mode)
@@ -263,8 +316,9 @@ export function AuditWorkspace() {
         setFileGraph(nextGraph)
         setFileGraphStatus("ready")
         setSelectedFilePath(null)
-        setSelectedFileModulePath(null)
-        setExpandedFileModulePaths(new Set())
+        setSelectedFileGroupId(null)
+        setExpandedArchitectureIds(new Set())
+        setExpandedDomainIds(new Set())
         setFileHopScope(1)
         setFileSearch("")
         setFilePositions({})
@@ -410,14 +464,17 @@ export function AuditWorkspace() {
                 snapshot={fileGraph}
                 search={fileSearch}
                 selectedPath={selectedFilePath}
-                selectedModulePath={selectedFileModulePath}
-                expandedModulePaths={expandedFileModulePaths}
+                selectedGroupId={selectedFileGroupId}
+                expandedArchitectureIds={expandedArchitectureIds}
+                expandedDomainIds={expandedDomainIds}
                 hopScope={fileHopScope}
                 positions={filePositions}
                 viewport={fileViewport}
                 onSelect={selectFileNode}
-                onSelectModule={selectFileModule}
-                onToggleModule={toggleFileModule}
+                onSelectGroup={selectFileGroup}
+                onToggleArchitecture={toggleArchitecture}
+                onToggleDomain={toggleDomain}
+                onCollapseExpansion={collapseFileExpansion}
                 onHopScope={setFileHopScope}
                 onPosition={(id, position) => setFilePositions((positions) => ({ ...positions, [id]: position }))}
                 onViewport={setFileViewport}

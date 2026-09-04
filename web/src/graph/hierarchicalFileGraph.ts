@@ -1,34 +1,62 @@
 import type { FileGraphSnapshot } from "../types/fileGraph"
+import {
+  ARCHITECTURE_LAYER_LABELS,
+  classifyFileArchitecture,
+  type ArchitectureLane,
+  type ArchitectureLayer,
+  type FileArchitecture,
+} from "./fileArchitecture"
 import { fileMatchesSearch } from "./fileGraphSelectors"
 
 export type DependencyHopScope = 1 | 2 | "all"
+export type FileRelationship = "main" | "cross-project" | "support" | "test" | "other"
 
-export interface VisibleModuleNode {
-  kind: "module"
+interface VisibleGroupBase {
   id: string
-  path: string
+  project: string
+  layer: ArchitectureLayer
   fileCount: number
   internalDependencyCount: number
   diagnosticCount: number
   searchMatch: boolean
+  rank: number
+  lane: ArchitectureLane
+}
+
+export interface VisibleArchitectureNode extends VisibleGroupBase {
+  kind: "architecture"
+  label: string
+}
+
+export interface VisibleDomainNode extends VisibleGroupBase {
+  kind: "domain"
+  architectureId: string
+  domain: string
 }
 
 export interface VisibleFileNode {
   kind: "file"
   id: string
   path: string
-  modulePath: string
+  architectureId: string
+  domainId: string
+  project: string
+  layer: ArchitectureLayer
+  domain: string
   diagnosticCount: number
   searchMatch: boolean
+  rank: number
+  lane: ArchitectureLane
 }
 
-export type FileGraphEntity = VisibleModuleNode | VisibleFileNode
+export type FileGraphEntity = VisibleArchitectureNode | VisibleDomainNode | VisibleFileNode
 
 export interface VisibleFileGraphEdge {
   id: string
   from: string
   to: string
   dependencyCount: number
+  relationship: FileRelationship
 }
 
 export interface VisibleFileGraph {
@@ -36,19 +64,42 @@ export interface VisibleFileGraph {
   edges: VisibleFileGraphEdge[]
 }
 
+export interface ExpandedArchitectureItem {
+  kind: "architecture" | "domain"
+  id: string
+  label: string
+}
+
+export const FILE_RELATIONSHIP_DETAILS: ReadonlyArray<{
+  relationship: FileRelationship
+  label: string
+  color: string
+}> = [
+  { relationship: "main", label: "Application flow", color: "#6f747b" },
+  { relationship: "cross-project", label: "Cross-project", color: "#7a8290" },
+  { relationship: "support", label: "Configuration / shared", color: "#8b8278" },
+  { relationship: "test", label: "Test dependency", color: "#7d897f" },
+  { relationship: "other", label: "Other", color: "#92969c" },
+]
+
+export function relationshipDetails(relationship: FileRelationship) {
+  return FILE_RELATIONSHIP_DETAILS.find((details) => details.relationship === relationship)!
+}
+
 export function fileEntityId(path: string): string {
   return `file:${encodeURIComponent(path)}`
 }
 
-export function moduleEntityId(path: string): string {
-  return `module:${encodeURIComponent(path)}`
+export function architectureEntityId(project: string, layer: ArchitectureLayer): string {
+  return `architecture:${encodeURIComponent(project)}:${layer}`
 }
 
-export function modulePathForFile(path: string): string {
-  const parts = path.replaceAll("\\", "/").split("/").filter(Boolean)
-  const directories = parts.slice(0, -1)
-  if (directories.length === 0) return "."
-  return directories.slice(0, 2).join("/")
+export function domainEntityId(project: string, layer: ArchitectureLayer, domain: string): string {
+  return `domain:${encodeURIComponent(project)}:${layer}:${encodeURIComponent(domain)}`
+}
+
+export function architectureForFile(path: string): FileArchitecture {
+  return classifyFileArchitecture(path)
 }
 
 function diagnosticCounts(snapshot: FileGraphSnapshot): Map<string, number> {
@@ -83,69 +134,141 @@ function filesWithinHops(snapshot: FileGraphSnapshot, selectedPath: string, hops
   return visible
 }
 
+function classifyRelationship(source: FileArchitecture, target: FileArchitecture): FileRelationship {
+  if (source.project !== target.project) return "cross-project"
+  if (source.layer === "test" || target.layer === "test") return "test"
+  if (["configuration", "shared"].includes(source.layer) || ["configuration", "shared"].includes(target.layer)) {
+    return "support"
+  }
+  const main = new Set<ArchitectureLayer>([
+    "entrypoint", "presentation", "transport", "application", "domain", "persistence", "infrastructure",
+  ])
+  if (main.has(source.layer) && main.has(target.layer)) return "main"
+  return "other"
+}
+
+function countInternalDependencies(
+  snapshot: FileGraphSnapshot,
+  filePaths: ReadonlySet<string>,
+): number {
+  return snapshot.edges.filter((edge) => filePaths.has(edge.from) && filePaths.has(edge.to)).length
+}
+
+function groupEntity(
+  kind: "architecture" | "domain",
+  id: string,
+  architecture: FileArchitecture,
+  files: readonly string[],
+  snapshot: FileGraphSnapshot,
+  diagnostics: ReadonlyMap<string, number>,
+  search: string,
+): VisibleArchitectureNode | VisibleDomainNode {
+  const fileSet = new Set(files)
+  const common = {
+    id,
+    project: architecture.project,
+    layer: architecture.layer,
+    fileCount: files.length,
+    internalDependencyCount: countInternalDependencies(snapshot, fileSet),
+    diagnosticCount: files.reduce((total, path) => total + (diagnostics.get(path) ?? 0), 0),
+    searchMatch: files.some((path) => fileMatchesSearch(path, search)),
+    rank: architecture.rank,
+    lane: architecture.lane,
+  }
+  if (kind === "architecture") {
+    return { ...common, kind, label: ARCHITECTURE_LAYER_LABELS[architecture.layer] }
+  }
+  return {
+    ...common,
+    kind,
+    architectureId: architectureEntityId(architecture.project, architecture.layer),
+    domain: architecture.domain,
+  }
+}
+
 export function buildHierarchicalFileGraph(
   snapshot: FileGraphSnapshot,
-  expandedModulePaths: ReadonlySet<string>,
+  expandedArchitectureIds: ReadonlySet<string>,
+  expandedDomainIds: ReadonlySet<string>,
   selectedPath: string | null,
   hopScope: DependencyHopScope,
   search = "",
 ): VisibleFileGraph {
-  const moduleForFile = new Map(snapshot.nodes.map((node) => [node.path, modulePathForFile(node.path)]))
-  const filesByModule = new Map<string, string[]>()
+  const architectureByFile = new Map(snapshot.nodes.map((node) => [node.path, architectureForFile(node.path)]))
+  const filesByArchitecture = new Map<string, string[]>()
+  const filesByDomain = new Map<string, string[]>()
   for (const node of snapshot.nodes) {
-    const modulePath = moduleForFile.get(node.path)!
-    const files = filesByModule.get(modulePath) ?? []
-    files.push(node.path)
-    filesByModule.set(modulePath, files)
+    const architecture = architectureByFile.get(node.path)!
+    const architectureId = architectureEntityId(architecture.project, architecture.layer)
+    const domainId = domainEntityId(architecture.project, architecture.layer, architecture.domain)
+    filesByArchitecture.set(architectureId, [...(filesByArchitecture.get(architectureId) ?? []), node.path])
+    filesByDomain.set(domainId, [...(filesByDomain.get(domainId) ?? []), node.path])
   }
-  for (const files of filesByModule.values()) files.sort()
+  for (const files of [...filesByArchitecture.values(), ...filesByDomain.values()]) files.sort()
 
   const diagnostics = diagnosticCounts(snapshot)
-  const internalDependencies = new Map<string, number>()
-  for (const edge of snapshot.edges) {
-    const sourceModule = moduleForFile.get(edge.from)
-    if (sourceModule && sourceModule === moduleForFile.get(edge.to)) {
-      internalDependencies.set(sourceModule, (internalDependencies.get(sourceModule) ?? 0) + 1)
-    }
-  }
-
   const allNodes: FileGraphEntity[] = []
-  for (const [modulePath, files] of [...filesByModule].sort(([left], [right]) => left.localeCompare(right))) {
-    if (expandedModulePaths.has(modulePath)) {
-      for (const path of files) {
-        allNodes.push({
-          kind: "file",
-          id: fileEntityId(path),
-          path,
-          modulePath,
-          diagnosticCount: diagnostics.get(path) ?? 0,
-          searchMatch: fileMatchesSearch(path, search),
-        })
-      }
+  const representedFiles = new Map<string, readonly string[]>()
+
+  for (const [architectureId, architectureFiles] of [...filesByArchitecture].sort(([left], [right]) => left.localeCompare(right))) {
+    const architecture = architectureByFile.get(architectureFiles[0])!
+    if (!expandedArchitectureIds.has(architectureId)) {
+      allNodes.push(groupEntity("architecture", architectureId, architecture, architectureFiles, snapshot, diagnostics, search))
+      representedFiles.set(architectureId, architectureFiles)
       continue
     }
-    allNodes.push({
-      kind: "module",
-      id: moduleEntityId(modulePath),
-      path: modulePath,
-      fileCount: files.length,
-      internalDependencyCount: internalDependencies.get(modulePath) ?? 0,
-      diagnosticCount: files.reduce((total, path) => total + (diagnostics.get(path) ?? 0), 0),
-      searchMatch: files.some((path) => fileMatchesSearch(path, search)),
-    })
+
+    const domainEntries = [...filesByDomain]
+      .filter(([, files]) => architectureByFile.get(files[0])?.project === architecture.project
+        && architectureByFile.get(files[0])?.layer === architecture.layer)
+      .sort(([left], [right]) => left.localeCompare(right))
+    for (const [domainId, domainFiles] of domainEntries) {
+      const domainArchitecture = architectureByFile.get(domainFiles[0])!
+      if (!expandedDomainIds.has(domainId)) {
+        allNodes.push(groupEntity("domain", domainId, domainArchitecture, domainFiles, snapshot, diagnostics, search))
+        representedFiles.set(domainId, domainFiles)
+        continue
+      }
+      for (const path of domainFiles) {
+        const fileArchitecture = architectureByFile.get(path)!
+        const id = fileEntityId(path)
+        allNodes.push({
+          kind: "file",
+          id,
+          path,
+          architectureId,
+          domainId,
+          project: fileArchitecture.project,
+          layer: fileArchitecture.layer,
+          domain: fileArchitecture.domain,
+          diagnosticCount: diagnostics.get(path) ?? 0,
+          searchMatch: fileMatchesSearch(path, search),
+          rank: fileArchitecture.rank,
+          lane: fileArchitecture.lane,
+        })
+        representedFiles.set(id, [path])
+      }
+    }
   }
 
+  allNodes.sort((left, right) => left.id.localeCompare(right.id))
+
   const visibleEndpoint = (path: string): string | null => {
-    const modulePath = moduleForFile.get(path)
-    if (!modulePath) return null
-    return expandedModulePaths.has(modulePath) ? fileEntityId(path) : moduleEntityId(modulePath)
+    const architecture = architectureByFile.get(path)
+    if (!architecture) return null
+    const architectureId = architectureEntityId(architecture.project, architecture.layer)
+    if (!expandedArchitectureIds.has(architectureId)) return architectureId
+    const domainId = domainEntityId(architecture.project, architecture.layer, architecture.domain)
+    return expandedDomainIds.has(domainId) ? fileEntityId(path) : domainId
   }
 
   const aggregatedEdges = new Map<string, VisibleFileGraphEdge>()
   for (const edge of snapshot.edges) {
     const from = visibleEndpoint(edge.from)
     const to = visibleEndpoint(edge.to)
-    if (!from || !to || from === to) continue
+    const sourceArchitecture = architectureByFile.get(edge.from)
+    const targetArchitecture = architectureByFile.get(edge.to)
+    if (!from || !to || from === to || !sourceArchitecture || !targetArchitecture) continue
     const key = `${from}\u0000${to}`
     const current = aggregatedEdges.get(key)
     if (current) {
@@ -156,6 +279,7 @@ export function buildHierarchicalFileGraph(
         from,
         to,
         dependencyCount: 1,
+        relationship: classifyRelationship(sourceArchitecture, targetArchitecture),
       })
     }
   }
@@ -166,8 +290,7 @@ export function buildHierarchicalFileGraph(
   const searchActive = search.trim().length > 0
   const visibleNodeIds = new Set(allNodes.flatMap((node) => {
     if (!focusedFiles) return [node.id]
-    const representedFiles = node.kind === "file" ? [node.path] : filesByModule.get(node.path) ?? []
-    const inFocus = representedFiles.some((path) => focusedFiles.has(path))
+    const inFocus = (representedFiles.get(node.id) ?? []).some((path) => focusedFiles.has(path))
     return inFocus || (searchActive && node.searchMatch) ? [node.id] : []
   }))
 
@@ -177,4 +300,32 @@ export function buildHierarchicalFileGraph(
       .filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to))
       .sort((left, right) => left.id.localeCompare(right.id)),
   }
+}
+
+export function expandedArchitectureItems(
+  snapshot: FileGraphSnapshot,
+  expandedArchitectureIds: ReadonlySet<string>,
+  expandedDomainIds: ReadonlySet<string>,
+): ExpandedArchitectureItem[] {
+  const items = new Map<string, ExpandedArchitectureItem>()
+  for (const node of snapshot.nodes) {
+    const architecture = architectureForFile(node.path)
+    const architectureId = architectureEntityId(architecture.project, architecture.layer)
+    if (expandedArchitectureIds.has(architectureId)) {
+      items.set(architectureId, {
+        kind: "architecture",
+        id: architectureId,
+        label: `${architecture.project} / ${ARCHITECTURE_LAYER_LABELS[architecture.layer]}`,
+      })
+    }
+    const domainId = domainEntityId(architecture.project, architecture.layer, architecture.domain)
+    if (expandedDomainIds.has(domainId)) {
+      items.set(domainId, {
+        kind: "domain",
+        id: domainId,
+        label: `${architecture.project} / ${ARCHITECTURE_LAYER_LABELS[architecture.layer]} / ${architecture.domain}`,
+      })
+    }
+  }
+  return [...items.values()].sort((left, right) => left.label.localeCompare(right.label))
 }

@@ -9,7 +9,8 @@ import { FileSidebar } from "../src/components/FileSidebar/FileSidebar"
 import { GraphModeSelector } from "../src/components/GraphModeSelector/GraphModeSelector"
 import { GitHubFileGraphForm } from "../src/components/FileSidebar/GitHubFileGraphForm"
 import { FileNode } from "../src/components/FileGraphCanvas/FileNode"
-import { ModuleNode } from "../src/components/FileGraphCanvas/ModuleNode"
+import { ArchitectureNode } from "../src/components/FileGraphCanvas/ArchitectureNode"
+import { DomainNode } from "../src/components/FileGraphCanvas/DomainNode"
 import type { AuditPackage } from "../src/types/audit"
 
 const counts = { pending: 0, running: 0, retrying: 1, completed: 10, dead_lettered: 1 }
@@ -27,9 +28,14 @@ describe("Classic page components", () => {
             fileName: "App.tsx",
             parentPath: "frontend",
             category: "frontend",
+            project: "frontend",
+            layer: "entrypoint",
+            domain: "General",
             diagnosticCount: 1,
             selected: false,
             searchMatch: true,
+            rank: 0,
+            lane: "main",
           }}
           selected={false}
           dragging={false}
@@ -48,22 +54,28 @@ describe("Classic page components", () => {
     expect(screen.getByLabelText("1 diagnostics")).toBeInTheDocument()
   })
 
-  it("shows module counts and expands the requested module", async () => {
+  it("shows architecture counts and expands the requested layer", async () => {
     const user = userEvent.setup()
     const onToggle = vi.fn()
     render(
       <ReactFlowProvider>
-        <ModuleNode
-          id="module:frontend%2Fcomponents"
-          type="module"
+        <ArchitectureNode
+          id="architecture:frontend:presentation"
+          type="architecture"
           data={{
-            entityKind: "module",
-            path: "frontend/components",
+            entityKind: "architecture",
+            id: "architecture:frontend:presentation",
+            project: "frontend",
+            layer: "presentation",
+            layerLabel: "Presentation",
+            label: "Presentation",
             fileCount: 12,
             internalDependencyCount: 18,
             diagnosticCount: 2,
             selected: false,
             searchMatch: true,
+            rank: 1,
+            lane: "main",
             onToggle,
           }}
           selected={false}
@@ -81,8 +93,53 @@ describe("Classic page components", () => {
     )
     expect(screen.getByText("12 files · 18 internal")).toBeInTheDocument()
     expect(screen.getByLabelText("2 diagnostics")).toBeInTheDocument()
-    await user.click(screen.getByRole("button", { name: "Expand module frontend/components" }))
-    expect(onToggle).toHaveBeenCalledWith("frontend/components")
+    await user.click(screen.getByRole("button", { name: "Expand Presentation in frontend" }))
+    expect(onToggle).toHaveBeenCalledWith("architecture:frontend:presentation", "frontend")
+  })
+
+  it("shows a domain and expands it to files", async () => {
+    const user = userEvent.setup()
+    const onToggle = vi.fn()
+    render(
+      <ReactFlowProvider>
+        <DomainNode
+          id="domain:backend:application:diagnostics"
+          type="domain"
+          data={{
+            entityKind: "domain",
+            id: "domain:backend:application:diagnostics",
+            architectureId: "architecture:backend:application",
+            project: "backend",
+            layer: "application",
+            layerLabel: "Services",
+            domain: "diagnostics",
+            fileCount: 4,
+            internalDependencyCount: 3,
+            diagnosticCount: 0,
+            selected: false,
+            searchMatch: true,
+            rank: 3,
+            lane: "main",
+            onToggle,
+          }}
+          selected={false}
+          dragging={false}
+          draggable
+          selectable
+          deletable={false}
+          isConnectable={false}
+          zIndex={0}
+          parentId={undefined}
+          positionAbsoluteX={0}
+          positionAbsoluteY={0}
+        />
+      </ReactFlowProvider>,
+    )
+    await user.click(screen.getByRole("button", { name: "Expand domain diagnostics in Services" }))
+    expect(onToggle).toHaveBeenCalledWith(
+      "domain:backend:application:diagnostics",
+      "architecture:backend:application",
+    )
   })
 
   it("changes search and filter controls", async () => {

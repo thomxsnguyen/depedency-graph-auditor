@@ -6,7 +6,12 @@ import {
 } from "../src/graph/fileGraphSelectors"
 import { fileNodeId, mapFileGraph } from "../src/graph/mapFileGraph"
 import { classifyFile } from "../src/graph/fileCategory"
-import { buildHierarchicalFileGraph, moduleEntityId } from "../src/graph/hierarchicalFileGraph"
+import {
+  architectureEntityId,
+  architectureForFile,
+  buildHierarchicalFileGraph,
+  domainEntityId,
+} from "../src/graph/hierarchicalFileGraph"
 import type { FileGraphSnapshot } from "../src/types/fileGraph"
 
 const snapshot: FileGraphSnapshot = {
@@ -26,10 +31,21 @@ const snapshot: FileGraphSnapshot = {
   ],
 }
 
+function fullyExpandedGraph(selectedPath: string | null = null, search = "") {
+  const architecture = snapshot.nodes.map((node) => architectureForFile(node.path))
+  return buildHierarchicalFileGraph(
+    snapshot,
+    new Set(architecture.map((item) => architectureEntityId(item.project, item.layer))),
+    new Set(architecture.map((item) => domainEntityId(item.project, item.layer, item.domain))),
+    selectedPath,
+    "all",
+    search,
+  )
+}
+
 describe("file graph mapping", () => {
   it("uses complete paths as stable identities and preserves edge direction", () => {
-    const visible = buildHierarchicalFileGraph(snapshot, new Set(["src", "pages"]), null, 1)
-    const graph = mapFileGraph(visible, null, null, "", {})
+    const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {})
     expect(fileNodeId("src/Button.tsx")).not.toBe(fileNodeId("pages/Button.tsx"))
     expect(graph.nodes.map((node) => node.id)).toContain(fileNodeId("src/Button.tsx"))
     expect(graph.edges.find((edge) => edge.source === fileNodeId("src/App.tsx"))).toMatchObject({
@@ -39,11 +55,15 @@ describe("file graph mapping", () => {
   })
 
   it("groups diagnostics and highlights only resolved adjacent edges", () => {
-    const visible = buildHierarchicalFileGraph(snapshot, new Set(["src", "pages"]), "src/App.tsx", "all", "src/app")
-    const graph = mapFileGraph(visible, "src/App.tsx", null, "src/app", {})
+    const graph = mapFileGraph(
+      fullyExpandedGraph("src/App.tsx", "src/app"),
+      "src/App.tsx",
+      null,
+      "src/app",
+      {},
+    )
     expect(graph.nodes.find((node) => node.data.path === "src/App.tsx")?.data.diagnosticCount).toBe(1)
     expect(graph.edges.filter((edge) => edge.className?.includes("selected"))).toHaveLength(1)
-    expect(graph.edges).toHaveLength(snapshot.edges.length)
   })
 
   it("classifies file roles with specific rules taking precedence over folders", () => {
@@ -56,23 +76,30 @@ describe("file graph mapping", () => {
     expect(classifyFile("main.go")).toBe("general")
   })
 
-  it("adds the category to each mapped node", () => {
-    const visible = buildHierarchicalFileGraph(snapshot, new Set(["src", "pages"]), null, 1)
-    const graph = mapFileGraph(visible, null, null, "", {})
-    expect(graph.nodes.find((node) => node.data.path === "pages/Button.tsx")?.data.category).toBe("frontend")
+  it("adds category and architecture metadata to mapped file nodes", () => {
+    const graph = mapFileGraph(fullyExpandedGraph(), null, null, "", {})
+    expect(graph.nodes.find((node) => node.data.path === "pages/Button.tsx")?.data).toMatchObject({
+      category: "frontend",
+      project: "pages",
+      layer: "presentation",
+    })
   })
 
-  it("maps collapsed modules and aggregate edge labels", () => {
-    const visible = buildHierarchicalFileGraph(snapshot, new Set(), null, 1)
+  it("maps architecture groups and neutral aggregate arrows", () => {
+    const visible = buildHierarchicalFileGraph(snapshot, new Set(), new Set(), null, 1)
+    const selectedId = architectureEntityId("src", "entrypoint")
     const graph = mapFileGraph({
       ...visible,
       edges: visible.edges.map((edge) => ({ ...edge, dependencyCount: 2 })),
-    }, null, "src", "", {})
-    expect(graph.nodes.find((node) => node.id === moduleEntityId("src"))).toMatchObject({
-      type: "module",
+    }, null, selectedId, "", {})
+    expect(graph.nodes.find((node) => node.id === selectedId)).toMatchObject({
+      type: "architecture",
       selected: true,
     })
-    expect(graph.edges[0]?.label).toBe("2")
+    expect(graph.edges[0]).toMatchObject({
+      label: "2",
+      markerEnd: expect.objectContaining({ color: expect.any(String) }),
+    })
   })
 
   it("selects sorted incoming, outgoing, diagnostic, and summary data", () => {

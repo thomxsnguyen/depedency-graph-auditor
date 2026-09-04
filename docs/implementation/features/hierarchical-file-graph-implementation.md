@@ -4,6 +4,11 @@
 
 Implemented according to the scoped plan below.
 
+The original two-directory presentation described here is superseded by the
+architecture -> domain -> file hierarchy documented in
+`architecture-oriented-file-graph-implementation.md`. Its normalized snapshot,
+edge aggregation, diagnostics, and dependency-hop foundations remain in use.
+
 ## Objective
 
 Make large file-dependency graphs understandable by presenting a repository as

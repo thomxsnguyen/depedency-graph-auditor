@@ -18,25 +18,36 @@ import { fileMatchesSearch } from "../../graph/fileGraphSelectors"
 import { categoryDetails, classifyFile, FILE_CATEGORY_DETAILS } from "../../graph/fileCategory"
 import {
   buildHierarchicalFileGraph,
+  expandedArchitectureItems,
+  FILE_RELATIONSHIP_DETAILS,
   type DependencyHopScope,
+  type ExpandedArchitectureItem,
 } from "../../graph/hierarchicalFileGraph"
+import { ArchitectureNode } from "./ArchitectureNode"
+import { DomainNode } from "./DomainNode"
 import { FileNode } from "./FileNode"
-import { ModuleNode } from "./ModuleNode"
 
-const nodeTypes: NodeTypes = { file: FileNode, module: ModuleNode }
+const nodeTypes: NodeTypes = {
+  architecture: ArchitectureNode,
+  domain: DomainNode,
+  file: FileNode,
+}
 
 interface FileGraphCanvasProps {
   snapshot: FileGraphSnapshot
   search: string
   selectedPath: string | null
-  selectedModulePath: string | null
-  expandedModulePaths: ReadonlySet<string>
+  selectedGroupId: string | null
+  expandedArchitectureIds: ReadonlySet<string>
+  expandedDomainIds: ReadonlySet<string>
   hopScope: DependencyHopScope
   positions: Record<string, GraphPosition>
   viewport: Viewport | null
   onSelect: (path: string | null) => void
-  onSelectModule: (path: string | null) => void
-  onToggleModule: (path: string) => void
+  onSelectGroup: (id: string | null) => void
+  onToggleArchitecture: (id: string, project: string) => void
+  onToggleDomain: (id: string, architectureId: string) => void
+  onCollapseExpansion: (item: ExpandedArchitectureItem) => void
   onHopScope: (scope: DependencyHopScope) => void
   onPosition: (id: string, position: GraphPosition) => void
   onViewport: (viewport: Viewport) => void
@@ -87,17 +98,22 @@ function FileCanvasControls({
   )
 }
 
-function ExpandedModuleControls({
-  modulePaths,
-  onToggle,
-}: { modulePaths: ReadonlySet<string>; onToggle: (path: string) => void }) {
-  if (modulePaths.size === 0) return null
+function ExpandedArchitectureControls({
+  items,
+  onCollapse,
+}: { items: readonly ExpandedArchitectureItem[]; onCollapse: (item: ExpandedArchitectureItem) => void }) {
+  if (items.length === 0) return null
   return (
-    <aside className="expanded-modules" aria-label="Expanded modules">
+    <aside className="expanded-modules" aria-label="Expanded architecture">
       <span>Expanded</span>
-      {[...modulePaths].sort().map((path) => (
-        <button key={path} type="button" onClick={() => onToggle(path)} aria-label={`Collapse module ${path}`}>
-          {path === "." ? "Repository root" : path}
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => onCollapse(item)}
+          aria-label={`Collapse ${item.kind} ${item.label}`}
+        >
+          {item.label}
           <i aria-hidden="true">×</i>
         </button>
       ))}
@@ -122,6 +138,23 @@ function FileCategoryLegend({ paths }: { paths: readonly string[] }) {
   )
 }
 
+function RelationshipLegend({ relationships }: { relationships: ReadonlySet<string> }) {
+  if (relationships.size < 2) return null
+  return (
+    <aside className="file-relationship-legend" aria-label="Dependency relationship legend">
+      <span className="file-category-legend__title">Relationships</span>
+      <ul>
+        {FILE_RELATIONSHIP_DETAILS.filter(({ relationship }) => relationships.has(relationship)).map(({ relationship, label, color }) => (
+          <li key={relationship}>
+            <i style={{ backgroundColor: color }} aria-hidden="true" />
+            <span>{label}</span>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  )
+}
+
 function FileGraphCanvasInner(props: FileGraphCanvasProps) {
   const flow = useReactFlow()
   const onReset = props.onReset
@@ -137,28 +170,43 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
   const visibleGraph = useMemo(
     () => buildHierarchicalFileGraph(
       props.snapshot,
-      props.expandedModulePaths,
+      props.expandedArchitectureIds,
+      props.expandedDomainIds,
       props.selectedPath,
       props.hopScope,
       props.search,
     ),
-    [props.expandedModulePaths, props.hopScope, props.search, props.selectedPath, props.snapshot],
+    [props.expandedArchitectureIds, props.expandedDomainIds, props.hopScope, props.search, props.selectedPath, props.snapshot],
+  )
+  const expansionItems = useMemo(
+    () => expandedArchitectureItems(props.snapshot, props.expandedArchitectureIds, props.expandedDomainIds),
+    [props.expandedArchitectureIds, props.expandedDomainIds, props.snapshot],
+  )
+  const relationships = useMemo(
+    () => new Set(visibleGraph.edges.map((edge) => edge.relationship)),
+    [visibleGraph.edges],
   )
   const mapped = useMemo(
-    () => mapFileGraph(visibleGraph, props.selectedPath, props.selectedModulePath, props.search, props.positions),
-    [props.positions, props.search, props.selectedModulePath, props.selectedPath, visibleGraph],
+    () => mapFileGraph(visibleGraph, props.selectedPath, props.selectedGroupId, props.search, props.positions),
+    [props.positions, props.search, props.selectedGroupId, props.selectedPath, visibleGraph],
   )
   const interactiveNodes = useMemo(
-    () => mapped.nodes.map((node): FileGraphFlowNode => node.type === "module"
-      ? {
+    () => mapped.nodes.map((node): FileGraphFlowNode => {
+      if (node.type === "architecture") {
+        return {
           ...node,
-          data: { ...node.data, onSelect: props.onSelectModule, onToggle: props.onToggleModule },
+          data: { ...node.data, onSelect: props.onSelectGroup, onToggle: props.onToggleArchitecture },
         }
-      : {
+      }
+      if (node.type === "domain") {
+        return {
           ...node,
-          data: { ...node.data, onSelect: props.onSelect },
-        }),
-    [mapped.nodes, props.onSelect, props.onSelectModule, props.onToggleModule],
+          data: { ...node.data, onSelect: props.onSelectGroup, onToggle: props.onToggleDomain },
+        }
+      }
+      return { ...node, data: { ...node.data, onSelect: props.onSelect } }
+    }),
+    [mapped.nodes, props.onSelect, props.onSelectGroup, props.onToggleArchitecture, props.onToggleDomain],
   )
   const [nodes, setNodes, onNodesChange] = useNodesState<FileGraphFlowNode>(interactiveNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(mapped.edges)
@@ -170,15 +218,19 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
       return interactiveNodes.map((node) => ({
         ...node,
         position: props.positions[node.id] ?? current.get(node.id)?.position ?? node.position,
-        selected: node.type === "file"
-          ? node.data.path === props.selectedPath
-          : node.data.path === props.selectedModulePath,
+        selected: node.type === "file" ? node.data.path === props.selectedPath : node.id === props.selectedGroupId,
       }))
     })
-  }, [interactiveNodes, mapped.edges, props.positions, props.selectedModulePath, props.selectedPath, setEdges, setNodes])
+  }, [interactiveNodes, mapped.edges, props.positions, props.selectedGroupId, props.selectedPath, setEdges, setNodes])
 
   const layoutNodes = useMemo(
-    () => visibleGraph.nodes.map((node) => ({ id: node.id, width: 184, height: node.kind === "module" ? 88 : 68 })),
+    () => visibleGraph.nodes.map((node) => ({
+      id: node.id,
+      width: 196,
+      height: node.kind === "file" ? 68 : 96,
+      rank: node.rank,
+      lane: node.lane,
+    })),
     [visibleGraph.nodes],
   )
   const layoutEdges = useMemo(
@@ -198,9 +250,7 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
         })))
         const shouldFit = completedInitialLayoutRef.current || initialViewportRef.current === null
         completedInitialLayoutRef.current = true
-        if (shouldFit) {
-          fitFrame = window.requestAnimationFrame(() => flow.fitView({ padding: 0.2, duration: 220 }))
-        }
+        if (shouldFit) fitFrame = window.requestAnimationFrame(() => flow.fitView({ padding: 0.2, duration: 220 }))
       })
       .catch(() => {
         // Deterministic fallback positions remain usable when layout fails.
@@ -219,7 +269,7 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
 
   const clearSelection = () => {
     props.onSelect(null)
-    props.onSelectModule(null)
+    props.onSelectGroup(null)
   }
 
   return (
@@ -230,8 +280,8 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={(_, node) => {
-        if (node.type === "module") props.onSelectModule(node.data.path)
-        else props.onSelect(node.data.path)
+        if (node.type === "file") props.onSelect(node.data.path)
+        else props.onSelectGroup(node.id)
       }}
       onPaneClick={clearSelection}
       onNodeDragStop={(_, node) => props.onPosition(node.id, node.position)}
@@ -251,15 +301,18 @@ function FileGraphCanvasInner(props: FileGraphCanvasProps) {
         onHopScope={props.onHopScope}
         onReset={resetLayout}
       />
-      <ExpandedModuleControls modulePaths={props.expandedModulePaths} onToggle={props.onToggleModule} />
+      <ExpandedArchitectureControls items={expansionItems} onCollapse={props.onCollapseExpansion} />
       <FileCategoryLegend paths={props.snapshot.nodes.map((node) => node.path)} />
+      <RelationshipLegend relationships={relationships} />
       <MiniMap
         className="graph-minimap"
         pannable
         zoomable
-        nodeColor={(node) => node.data.entityKind === "module"
-          ? "#62666c"
-          : categoryDetails(classifyFile(typeof node.data.path === "string" ? node.data.path : "")).color}
+        nodeColor={(node) => {
+          if (node.data.entityKind === "architecture") return "#51555b"
+          if (node.data.entityKind === "domain") return "#73777d"
+          return categoryDetails(classifyFile(typeof node.data.path === "string" ? node.data.path : "")).color
+        }}
         nodeStrokeColor="#d2d2d7"
         maskColor="rgba(245,245,247,0.78)"
         ariaLabel="File dependency graph minimap"
