@@ -400,6 +400,13 @@ func TestServiceIdempotencyAndAtomicClaim(t *testing.T) {
 	if foundCount != 1 {
 		t.Fatalf("successful concurrent claims=%d", foundCount)
 	}
+	if claimed.Attempts != 1 || claimed.LockedBy == "" || claimed.LeaseToken == "" || claimed.LockedUntil == nil {
+		t.Fatalf("claim returned stale lease state: %+v", claimed)
+	}
+	owned, err := s.Heartbeat(ctx, claimed, time.Minute)
+	if err != nil || !owned {
+		t.Fatalf("heartbeat with returned lease: owned=%v err=%v", owned, err)
+	}
 	stale := claimed
 	stale.LeaseToken = "wrong"
 	if err := s.Complete(ctx, stale, job.HandlerResult{Result: json.RawMessage(`{"ok":true}`)}); !errors.Is(err, job.ErrLeaseLost) {

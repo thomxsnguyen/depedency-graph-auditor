@@ -358,18 +358,16 @@ func (s *Store) Claim(ctx context.Context, workerID string, lease time.Duration)
 	defer func() { _ = tx.Rollback(ctx) }()
 	token := job.NewJobID()
 	value, err := scanServiceJob(tx.QueryRow(ctx, `
-		WITH next_job AS (
+		UPDATE jobs SET status=$3, attempts=attempts+1,
+			started_at=COALESCE(started_at, NOW()), locked_by=$4,
+			lease_token=$5, locked_until=NOW()+make_interval(secs => $6), heartbeat_at=NOW()
+		WHERE id=(
 			SELECT id FROM jobs
 			WHERE status IN ($1, $2) AND scheduled_at <= NOW()
 			ORDER BY scheduled_at, created_at, id
 			FOR UPDATE SKIP LOCKED LIMIT 1
-		), claimed AS (
-		UPDATE jobs j SET status=$3, attempts=j.attempts+1,
-			started_at=COALESCE(j.started_at, NOW()), locked_by=$4,
-			lease_token=$5, locked_until=NOW()+make_interval(secs => $6), heartbeat_at=NOW()
-		FROM next_job WHERE j.id=next_job.id
-		RETURNING j.id)
-		SELECT `+serviceJobColumns+` FROM jobs WHERE id=(SELECT id FROM claimed)`,
+		)
+		RETURNING `+serviceJobColumns,
 		job.StatusPending, job.StatusRetryScheduled, job.StatusRunning,
 		workerID, token, lease.Seconds()))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -618,7 +616,7 @@ func (s *Store) Fail(ctx context.Context, value job.Job, kind job.ErrorKind, mes
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO job_events
-		(job_id,event_type,attempt,worker_id,details) VALUES ($1,$2,$3,$4,jsonb_build_object('errorKind',$5,'error',$6))`,
+		(job_id,event_type,attempt,worker_id,details) VALUES ($1,$2,$3,$4,jsonb_build_object('errorKind',$5::text,'error',$6::text))`,
 		value.ID, string(status), value.Attempts, value.LockedBy, kind, message)
 	if err != nil {
 		return err
