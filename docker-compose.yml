@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: job-queue-pg
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -10,12 +9,81 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d   # auto-runs migrations on first start
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d jobqueue"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ./db/migrations:/migrations:ro
+    command: ["sh", "-c", "for file in /migrations/*.sql; do psql -h postgres -U postgres -d jobqueue -v ON_ERROR_STOP=1 -f \"$$file\"; done"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/jobqueue?sslmode=disable
+      API_ADDR: 0.0.0.0:8080
+      SHUTDOWN_TIMEOUT: 10s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout: 3s
+      retries: 10
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment: &worker-environment
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/jobqueue?sslmode=disable
+      WORKER_ID: worker-1
+      WORKER_CONCURRENCY: 4
+      WORKER_LEASE_DURATION: 15s
+      WORKER_HEARTBEAT_INTERVAL: 5s
+      WORKER_RECOVERY_INTERVAL: 2s
+      SHUTDOWN_TIMEOUT: 12s
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 15s
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      <<: *worker-environment
+      WORKER_ID: worker-2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 15s
+
+  dashboard:
+    build:
+      context: ./web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:80"
 
 volumes:
   pg_data:

@@ -46,11 +46,13 @@ func (s *Store) CreateJob(ctx context.Context, j job.Job) error {
 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO jobs (
-			id, type, payload, status, attempts, max_attempts, scheduled_at
+			id, type, payload, status, attempts, max_attempts, scheduled_at,
+			root_job_id, parent_job_id, internal
 		)
-		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+		VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, NULLIF($9, ''), $10)
 		ON CONFLICT (id) DO NOTHING
-	`, j.ID, j.Type, jsonValue(j.Payload), job.StatusPending, j.Attempts, maxAttempts, scheduledAt)
+	`, j.ID, j.Type, jsonValue(j.Payload), job.StatusPending, j.Attempts, maxAttempts,
+		scheduledAt, firstNonEmpty(j.RootJobID, j.ID), j.ParentJobID, j.Internal)
 	if err != nil {
 		return fmt.Errorf("create job %q: %w", j.ID, err)
 	}
@@ -58,6 +60,15 @@ func (s *Store) CreateJob(ctx context.Context, j job.Job) error {
 		return fmt.Errorf("create job %q: %w", j.ID, ErrJobExists)
 	}
 	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // AcquireJob atomically selects the next eligible pending job and marks it

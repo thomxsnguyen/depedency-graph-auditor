@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react"
-import { AuditWorkspace } from "./AuditWorkspace"
+import { OperationsDashboard } from "./OperationsDashboard"
 
 interface ErrorBoundaryState {
   error: Error | null
@@ -13,7 +13,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Dependency Audit Studio failed", error, info)
+    console.error("Operations dashboard failed", error, info)
   }
 
   render() {
@@ -21,11 +21,11 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
       return (
         <main className="centered-state" role="alert">
           <div className="state-panel">
-            <p className="eyebrow">Dependency Audit Studio</p>
-            <h1>The audit view could not be displayed.</h1>
-            <p>Refresh the page to reload the local demo.</p>
+            <p className="eyebrow">Distributed job queue</p>
+            <h1>The operations dashboard could not be displayed.</h1>
+            <p>Refresh the page to reconnect to the job API.</p>
             <button className="button button--primary" onClick={() => window.location.reload()}>
-              Reload demo
+              Reload dashboard
             </button>
           </div>
         </main>
@@ -39,7 +39,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 export function App() {
   return (
     <ErrorBoundary>
-      <AuditWorkspace />
+      <OperationsDashboard />
     </ErrorBoundary>
   )
 }

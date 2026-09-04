@@ -669,20 +669,11 @@ Polling is the initial update mechanism. Server-sent events may replace polling
 later without changing persisted contracts, but are not required for the
 deliverable.
 
-## Compatibility with current code
+## Compatibility outcome
 
-Phase 2 may add methods and schema without immediately removing the existing
-CLI path. During the transition:
-
-- `cmd/auditor` remains usable until the queued audit handler is proven.
-- `cmd/filegraph-api` remains available until the operations dashboard replaces
-  it.
-- Existing file-graph code receives no new features.
-- Existing `Store` behavior may be adapted behind compatibility methods while
-  new lease-aware operations are introduced and tested.
-
-The final cutover removes obsolete compatibility paths as described in the
-transition plan.
+The queued audit handler and operations dashboard replaced the temporary CLI
+and graph-server compatibility paths during the final cutover. The retained
+GitHub client retrieves dependency manifests only.
 
 ## Consequences
 

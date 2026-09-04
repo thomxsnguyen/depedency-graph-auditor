@@ -138,6 +138,8 @@ repository URL validation and remote manifest retrieval.
 
 ### Phase 0: Freeze the current baseline
 
+Status: complete.
+
 1. Resolve the current uncommitted UI changes intentionally.
 2. Verify that Go and frontend tests pass.
 3. Create a baseline commit or tag.
@@ -186,6 +188,8 @@ The API, database, and workers agree on one lifecycle model.
 
 ### Phase 2: Evolve PostgreSQL and the store
 
+Status: complete.
+
 Expand persistence while keeping the existing CLI operational. Expected data
 areas include:
 
@@ -230,6 +234,8 @@ The database can represent every required lifecycle transition.
 
 ### Phase 3: Add the API alongside the existing server
 
+Status: complete.
+
 Create `cmd/api` without deleting `cmd/filegraph-api`.
 
 Implement endpoints in this order:
@@ -253,6 +259,8 @@ A client can submit a job and inspect its durable state.
 ```
 
 ### Phase 4: Establish an independent worker
+
+Status: complete.
 
 Create `cmd/worker` and move queue execution out of `cmd/auditor`.
 
@@ -279,6 +287,8 @@ Two worker processes safely share work and recover an abandoned job.
 ```
 
 ### Phase 5: Move dependency auditing behind the queue
+
+Status: complete.
 
 Convert the auditor into a registered `dependency_audit` handler.
 
@@ -308,6 +318,8 @@ Submitting dependency_audit through the API produces a durable result.
 
 ### Phase 6: Replace the frontend
 
+Status: complete.
+
 Build the operations dashboard against the new API while leaving the old graph
 code untouched until the replacement is complete.
 
@@ -334,6 +346,8 @@ The complete reliability demo can be performed through the operations dashboard.
 ```
 
 ### Phase 7: Cut over and remove the file graph
+
+Status: complete.
 
 After the new dashboard covers the complete demo:
 
@@ -375,6 +389,8 @@ No production path, documentation, fixture, or test describes the removed featur
 ```
 
 ### Phase 8: Package the deliverable
+
+Status: complete.
 
 Complete:
 
@@ -449,17 +465,17 @@ part of this deliverable.
 ## Recommended milestone commits
 
 ```text
-docs: define job lifecycle and service boundaries
-feat: add lease-aware job persistence
-feat: add asynchronous job API
-feat: add independently runnable worker
-feat: add demo job handler and failure controls
-feat: run dependency audits through durable jobs
-feat: replace graph UI with operations dashboard
-refactor: remove file graph vertical slice
-test: cover concurrency and crash recovery
-build: package deployable compose stack
-docs: document architecture and demo workflow
+Define job lifecycle and service boundaries
+Add lease-aware job persistence
+Add asynchronous job API
+Add independently runnable worker
+Add demo job handler and failure controls
+Run dependency audits through durable jobs
+Replace graph UI with operations dashboard
+Remove obsolete graph vertical slice
+Cover concurrency and crash recovery
+Package deployable compose stack
+Document architecture and demo workflow
 ```
 
 ## Transition rule

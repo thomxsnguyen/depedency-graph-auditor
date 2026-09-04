@@ -67,13 +67,18 @@ func setupIntegrationDB(t *testing.T) *integrationDB {
 	}
 
 	_, filename, _, _ := runtime.Caller(0)
-	migrationPath := filepath.Join(filepath.Dir(filename), "../../../db/migrations/001_jobs.sql")
-	migration, err := os.ReadFile(migrationPath)
+	migrationPaths, err := filepath.Glob(filepath.Join(filepath.Dir(filename), "../../../db/migrations/*.sql"))
 	if err != nil {
-		t.Fatalf("read migration: %v", err)
+		t.Fatalf("list migrations: %v", err)
 	}
-	if _, err := pool.Exec(ctx, string(migration)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	for _, migrationPath := range migrationPaths {
+		migration, err := os.ReadFile(migrationPath)
+		if err != nil {
+			t.Fatalf("read migration: %v", err)
+		}
+		if _, err := pool.Exec(ctx, string(migration)); err != nil {
+			t.Fatalf("apply migration %s: %v", filepath.Base(migrationPath), err)
+		}
 	}
 
 	t.Cleanup(func() {
@@ -343,5 +348,197 @@ func TestAuditorDurableStorageSmoke(t *testing.T) {
 	}
 	if status != job.StatusCompleted {
 		t.Fatalf("durable smoke job status=%q", status)
+	}
+}
+
+func TestServiceIdempotencyAndAtomicClaim(t *testing.T) {
+	db := setupIntegrationDB(t)
+	ctx := context.Background()
+	s := storepg.New(db.pool)
+	input := job.Submission{Type: "demo", Payload: json.RawMessage(`{"durationMs":0}`), MaxAttempts: 3, IdempotencyKey: "same-request"}
+	first, created, err := s.Submit(ctx, input)
+	if err != nil || !created {
+		t.Fatalf("first submit: created=%v err=%v", created, err)
+	}
+	second, created, err := s.Submit(ctx, input)
+	if err != nil || created || second.ID != first.ID {
+		t.Fatalf("duplicate submit: id=%q created=%v err=%v", second.ID, created, err)
+	}
+	input.Payload = json.RawMessage(`{"durationMs":1}`)
+	if _, _, err := s.Submit(ctx, input); !errors.Is(err, job.ErrIdempotencyConflict) {
+		t.Fatalf("conflicting submit: %v", err)
+	}
+
+	type claimResult struct {
+		value job.Job
+		found bool
+		err   error
+	}
+	claims := make(chan claimResult, 2)
+	var claimers sync.WaitGroup
+	for _, workerID := range []string{"worker-one", "worker-two"} {
+		claimers.Add(1)
+		go func() {
+			defer claimers.Done()
+			value, found, err := s.Claim(ctx, workerID, time.Minute)
+			claims <- claimResult{value: value, found: found, err: err}
+		}()
+	}
+	claimers.Wait()
+	close(claims)
+	var claimed job.Job
+	foundCount := 0
+	for result := range claims {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.found {
+			claimed = result.value
+			foundCount++
+		}
+	}
+	if foundCount != 1 {
+		t.Fatalf("successful concurrent claims=%d", foundCount)
+	}
+	stale := claimed
+	stale.LeaseToken = "wrong"
+	if err := s.Complete(ctx, stale, job.HandlerResult{Result: json.RawMessage(`{"ok":true}`)}); !errors.Is(err, job.ErrLeaseLost) {
+		t.Fatalf("stale completion: %v", err)
+	}
+	if err := s.Complete(ctx, claimed, job.HandlerResult{Result: json.RawMessage(`{"ok":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := s.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.Status != job.StatusCompleted || len(detail.Attempts) != 1 || len(detail.Result) == 0 {
+		t.Fatalf("unexpected detail: %+v", detail)
+	}
+}
+
+func TestServiceRetryCancellationAndDLQReplay(t *testing.T) {
+	db := setupIntegrationDB(t)
+	ctx := context.Background()
+	s := storepg.New(db.pool)
+	retryJob, _, err := s.Submit(ctx, job.Submission{Type: "demo", Payload: json.RawMessage(`{}`), MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := s.Claim(ctx, "worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != retryJob.ID {
+		t.Fatalf("claimed %s", claimed.ID)
+	}
+	if err := s.Fail(ctx, claimed, job.ErrorTransient, "temporary", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := s.Get(ctx, retryJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.Status != job.StatusRetryScheduled {
+		t.Fatalf("status=%s", detail.Job.Status)
+	}
+	cancelled, err := s.Cancel(ctx, retryJob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != job.StatusCancelled {
+		t.Fatalf("cancel status=%s", cancelled.Status)
+	}
+
+	dead, _, err := s.Submit(ctx, job.Submission{Type: "demo", Payload: json.RawMessage(`{}`), MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err = s.Claim(ctx, "worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != dead.ID {
+		t.Fatalf("claimed %s", claimed.ID)
+	}
+	if err := s.Fail(ctx, claimed, job.ErrorTransient, "exhausted", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListDLQ(ctx, 50, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 {
+		t.Fatalf("dlq entries=%d", len(page.Entries))
+	}
+	replayed, err := s.ReplayDLQ(ctx, page.Entries[0].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Status != job.StatusPending || replayed.ReplayedFromJobID != dead.ID {
+		t.Fatalf("replayed=%+v", replayed)
+	}
+	if _, err := s.ReplayDLQ(ctx, page.Entries[0].ID, 2); !errors.Is(err, job.ErrConflict) {
+		t.Fatalf("second replay: %v", err)
+	}
+}
+
+func TestServicePermanentFailureIsNotRetried(t *testing.T) {
+	db := setupIntegrationDB(t)
+	ctx := context.Background()
+	s := storepg.New(db.pool)
+	value, _, err := s.Submit(ctx, job.Submission{Type: "demo", Payload: json.RawMessage(`{}`), MaxAttempts: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, found, err := s.Claim(ctx, "worker", time.Minute)
+	if err != nil || !found {
+		t.Fatalf("claim found=%v err=%v", found, err)
+	}
+	if err := s.Fail(ctx, claimed, job.ErrorPermanent, "invalid input", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := s.Get(ctx, value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.Status != job.StatusFailed || detail.Job.Attempts != 1 {
+		t.Fatalf("job=%+v", detail.Job)
+	}
+	if _, found, err := s.Claim(ctx, "worker", time.Minute); err != nil || found {
+		t.Fatalf("permanent failure reclaimed: found=%v err=%v", found, err)
+	}
+}
+
+func TestServiceReclaimsOnlyExpiredLease(t *testing.T) {
+	db := setupIntegrationDB(t)
+	ctx := context.Background()
+	s := storepg.New(db.pool)
+	first, _, _ := s.Submit(ctx, job.Submission{Type: "demo", Payload: json.RawMessage(`{}`), MaxAttempts: 2})
+	second, _, _ := s.Submit(ctx, job.Submission{Type: "demo", Payload: json.RawMessage(`{}`), MaxAttempts: 2})
+	claimedFirst, _, err := s.Claim(ctx, "worker-one", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedSecond, _, err := s.Claim(ctx, "worker-two", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.pool.Exec(ctx, "UPDATE jobs SET locked_until=NOW()-INTERVAL '1 second' WHERE id=$1", claimedFirst.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := s.ReclaimExpired(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("reclaimed=%d", count)
+	}
+	detailFirst, _ := s.Get(ctx, first.ID)
+	detailSecond, _ := s.Get(ctx, second.ID)
+	statuses := map[string]job.Status{detailFirst.Job.ID: detailFirst.Job.Status, detailSecond.Job.ID: detailSecond.Job.Status}
+	if statuses[claimedFirst.ID] != job.StatusPending || statuses[claimedSecond.ID] != job.StatusRunning {
+		t.Fatalf("statuses=%v", statuses)
 	}
 }

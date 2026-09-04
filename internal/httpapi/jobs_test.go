@@ -1,0 +1,58 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/thomxsnguyen/mini-distributed-job-api/internal/job"
+)
+
+type apiStoreStub struct {
+	job.ServiceStore
+	submitted job.Submission
+}
+
+func (s *apiStoreStub) Submit(_ context.Context, input job.Submission) (job.Job, bool, error) {
+	s.submitted = input
+	return job.Job{ID: "job-1", Type: input.Type, Status: job.StatusPending, MaxAttempts: input.MaxAttempts}, true, nil
+}
+
+func (s *apiStoreStub) Metrics(context.Context) (job.Metrics, error) {
+	return job.Metrics{Counts: job.Counts{job.StatusPending: 2}, Attempts: map[job.MetricKey]int64{}}, nil
+}
+
+func TestSubmitJobReturnsAccepted(t *testing.T) {
+	store := &apiStoreStub{}
+	request := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewBufferString(`{"type":"demo","payload":{"durationMs":0}}`))
+	request.Header.Set("Idempotency-Key", "demo-one")
+	recorder := httptest.NewRecorder()
+	NewJobAPI(store, nil).Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if store.submitted.Type != "demo" || store.submitted.IdempotencyKey != "demo-one" || store.submitted.MaxAttempts != job.DefaultMaxAttempts {
+		t.Fatalf("submission=%+v", store.submitted)
+	}
+}
+
+func TestSubmitRejectsUnsupportedJob(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewBufferString(`{"type":"unknown","payload":{}}`))
+	recorder := httptest.NewRecorder()
+	NewJobAPI(&apiStoreStub{}, nil).Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMetricsUsesBoundedLabels(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	recorder := httptest.NewRecorder()
+	NewJobAPI(&apiStoreStub{}, nil).Routes().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `job_queue_jobs{status="pending"} 2`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}

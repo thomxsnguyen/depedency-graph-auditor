@@ -1,277 +1,82 @@
-# Mini Distributed Job API & Dependency Auditor
+# Distributed Job Queue Service
 
-A robust, crash-resilient job queue engine in Go paired with a self-feeding dependency and license graph auditor as its reference workload.
+A deployable PostgreSQL-backed job queue with a Go API, independently scalable
+workers, an operations dashboard, and dependency auditing as a reference
+workload.
 
----
-
-## Overview
-
-The **Mini Distributed Job API** is a modular, high-throughput background job processing system designed to handle asynchronous tasks reliably. Rather than only serving simple fire-and-forget tasks, it provides a full suite of distributed systems primitives: bounded concurrency pools, at-least-once delivery, retry mechanics with exponential backoff and jitter, dead-letter queues, crash-resilient persistence, and graceful drain-on-shutdown.
-
-To put these mechanics through rigorous, adversarial conditions, the system includes a **Self-Feeding Dependency and License Auditor** reference workload. The auditor parses package manifests, recursively resolves transitive dependencies across external registries, evaluates packages against compliance and security policies, and produces an annotated directed dependency graph.
-
----
-
-## Core System Architecture
-
-```mermaid
-graph TB
-    subgraph Producers
-        API["API / CLI Client"]
-        Auditor["Self-Feeding Auditor Engine"]
-    end
-
-    subgraph Queue Layer
-        Q["Job Queue (Channel + Durable Store)"]
-    end
-
-    subgraph Worker Pool
-        W1["Worker Goroutine 1"]
-        W2["Worker Goroutine 2"]
-        WN["Worker Goroutine N"]
-    end
-
-    subgraph Failure Handling & Resiliency
-        Retry["Retry Engine (Exp. Backoff + Jitter)"]
-        DLQ["Dead-Letter Queue (DLQ)"]
-    end
-
-    subgraph Persistence Layer
-        DB[("Durable Storage / Postgres / Disk")]
-    end
-
-    API -->|Submit Job| Q
-    Auditor -->|Enqueue Discovered Deps| Q
-    Q -->|Dequeue| W1
-    Q -->|Dequeue| W2
-    Q -->|Dequeue| WN
-    W1 -->|Transient Error| Retry
-    W2 -->|Transient Error| Retry
-    WN -->|Transient Error| Retry
-    Retry -->|Re-enqueue with Delay| Q
-    Retry -->|Retries Exhausted| DLQ
-    Q --- DB
-    DLQ --- DB
+```text
+Browser -> Dashboard -> API -> PostgreSQL <- Worker 1..N
 ```
 
----
+## Start the complete application
 
-## Key Architectural Highlights
-
-### 1. Bounded Worker Pool & Backpressure
-- Concurrency is capped by a fixed number of worker goroutines rather than unbounded per-job goroutine creation.
-- The queue acts as a shock absorber during self-feeding bursts, protecting downstream services and package registries from thundering herds.
-
-### 2. At-Least-Once Delivery & Idempotency
-- Workers explicitly acknowledge (*ack*) completed jobs.
-- If a worker crashes mid-execution, the unacknowledged job remains available or is reclaimed on restart.
-- All handlers are designed to be idempotent or deduplicated via unique entity keys.
-
-### 3. Fault Tolerance & Retry Engine
-- Transient failures (e.g., registry rate limits, 5xx server errors, network timeouts) are retried with exponential backoff and full randomization jitter ($t = 2^{\text{attempt}} + \text{rand}$).
-- Eliminates synchronous retry spikes and prevents cascading failures across dependencies.
-
-### 4. Dead-Letter Queue (DLQ)
-- Jobs exceeding maximum retry thresholds are quarantined into a durable Dead-Letter Queue with error context preserved for inspection.
-
-### 5. Graceful Shutdown & Drain
-- On termination signals (`SIGINT`, `SIGTERM`), the engine stops accepting new submissions, allows running workers to finish within a configurable timeout, and cleanly flushes state.
-
----
-
-## Job State Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Pending : Enqueued / Submitted
-    Pending --> Running : Worker Dequeues
-    Running --> Completed : Success (Ack)
-    Running --> Pending : Transient Failure (Retry with Backoff)
-    Running --> DeadLettered : Max Retries Exceeded
-    Running --> Pending : Worker Crash / Unacked Timeout
-```
-
----
-
-## Reference Workload: Self-Feeding Dependency Auditor
-
-The auditor traverses and audits a project's full transitive dependency graph:
-
-```mermaid
-graph LR
-    Root["root-project"] --> A["pkg-a@1.2.0"]
-    Root --> B["pkg-b@3.0.1"]
-    A --> C["pkg-c@2.1.0 (Pass)"]
-    B --> C
-    B --> D["pkg-d@0.9.0 (⚠️ Outdated)"]
-    C --> E["pkg-e@1.0.0 (🚫 Disallowed License)"]
-```
-
-### Why this workload?
-- **Deduplication:** Traverses cyclic and diamond dependency graphs without infinite loops using a shared seen/visited registry.
-- **Dynamic Work Expansion:** Resolving a package dynamically discovers child dependencies and enqueues new sub-jobs back into the queue.
-- **Policy Enforcement:** Flags disallowed open-source licenses (e.g., AGPL/GPL when prohibited), outdated semantic versions, and security vulnerabilities.
-
----
-
-## Repository Structure
-
-```
-.
-├── cmd/
-│   └── auditor/           # Auditor CLI entrypoint
-├── docs/                  # Detailed architectural & component specifications
-│   ├── architecture.md
-│   ├── data-models.md
-│   ├── dead-letter-queue.md
-│   ├── dependency-auditor.md
-│   ├── future-enhancements.md
-│   ├── graceful-shutdown.md
-│   ├── job-queue.md
-│   ├── project-context.md
-│   ├── retry-engine.md
-│   ├── worker-pool.md
-│   └── implementation/    # Step-by-step implementation guides
-├── internal/
-│   ├── auditor/           # Dependency resolution, policy checks, & reporting
-│   ├── depfile/           # Dependency manifest parsing (package.json, go.mod)
-│   ├── job/               # Job definitions, interfaces, and state types
-│   ├── queue/             # In-memory and persistent queue implementations
-│   ├── semver/            # Semantic version constraint matching
-│   └── worker/            # Bounded worker pool implementation
-├── testdata/
-│   └── mock-package.json  # Sample npm manifest for an end-to-end audit
-├── go.mod
-└── go.sum
-```
-
----
-
-## Build Phases
-
-| Phase | Milestone | Focus Area |
-|:---:|:---|:---|
-| **Phase 1** | Bounded Worker Pool & Auditor Happy Path | Queue buffering, worker pool concurrency, and self-feeding job expansion |
-| **Phase 2** | Retry Engine | Exponential backoff, full jitter, and transient failure recovery |
-| **Phase 3** | Dead-Letter Queue (DLQ) | Poison pill isolation, quarantine thresholds, and error metadata |
-| **Phase 4** | Durability & Resumability | Postgres/Disk persistence layer, crash recovery, and restart frontiers |
-| **Phase 5** | Graceful Shutdown | Clean signal interception, in-flight job drain, and bounded timeouts |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- [Go 1.22+](https://go.dev/dl/)
-- Docker with Docker Compose
-- Network access to the public npm registry for end-to-end auditor runs
-
-### Start PostgreSQL
+Docker Compose is the supported delivery path:
 
 ```bash
-docker compose up -d postgres
+cp .env.example .env
+docker compose up --build
 ```
 
-The default database configuration is:
+Open the dashboard at [http://localhost:3000](http://localhost:3000). The API is
+available at `http://localhost:8080`, including `/health`, `/ready`, and
+`/metrics`.
+
+Compose starts PostgreSQL, applies every migration, starts the API, starts two
+workers, and serves the dashboard. Job state remains in the `pg_data` volume
+across restarts. Use `docker compose down -v` only when you intentionally want
+to delete that local history.
+
+## Run components locally
+
+Start only the database and migrations:
 
 ```bash
+docker compose up -d postgres migrate
 export DATABASE_URL='postgres://postgres:postgres@localhost:5432/jobqueue?sslmode=disable'
 ```
 
-### Running Tests
+Then use separate terminals:
 
-Run the race-enabled unit suite:
+```bash
+go run ./cmd/api
+go run ./cmd/worker
+go run ./cmd/worker
+```
+
+Run the dashboard in development mode:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+## Submit work
+
+```bash
+curl -i -X POST http://localhost:8080/api/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-1' \
+  -d '{"type":"demo","payload":{"durationMs":1000},"maxAttempts":5}'
+```
+
+The API returns `202 Accepted` immediately. Supported public job types are:
+
+- `demo`: controlled success, delay, transient failure, or permanent failure
+- `dependency_audit`: scans supported manifests in a public GitHub repository
+
+## Verification
 
 ```bash
 go test -race ./...
+DATABASE_URL="$DATABASE_URL" go test -race -tags=integration ./internal/store/postgres
+
+cd web
+npm run typecheck
+npm run lint
+npm test
+npm run build
 ```
 
-Run the PostgreSQL integration suite while the Compose service is running:
-
-```bash
-go test -race -tags=integration ./...
-```
-
-### Building the Auditor
-
-```bash
-go build -o bin/auditor ./cmd/auditor
-```
-
-### Generate a Markdown Dependency Report
-
-The auditor accepts one `package.json` path and an optional Markdown output
-path:
-
-```bash
-DATABASE_URL="$DATABASE_URL" go run ./cmd/auditor \
-  --output audit-report.md \
-  ./package.json
-```
-
-The report contains:
-
-1. A readable overview of the root and its direct dependencies.
-2. A compact graph for each policy-violation path.
-3. A collapsed complete graph containing every resolved package and edge.
-4. Package inventory and policy-violation tables.
-
-Package nodes use exact versions resolved from npm. Root, shared, transitive,
-diamond, and cyclic relationships are represented by directed Mermaid edges.
-
-### Run the Included Mock Package
-
-Use an isolated database so previous or interrupted audit jobs cannot affect the
-result:
-
-```bash
-docker exec job-queue-pg \
-  dropdb --if-exists -U postgres jobqueue_mock_run
-
-docker exec job-queue-pg \
-  createdb -U postgres jobqueue_mock_run
-
-docker exec job-queue-pg \
-  psql -U postgres \
-  -d jobqueue_mock_run \
-  -f /docker-entrypoint-initdb.d/001_jobs.sql
-
-DATABASE_URL='postgres://postgres:postgres@localhost:5432/jobqueue_mock_run?sslmode=disable' \
-go run ./cmd/auditor \
-  --output testdata/mock-audit-report.md \
-  testdata/mock-package.json
-```
-
-On macOS, open the generated report with:
-
-```bash
-open testdata/mock-audit-report.md
-```
-
-The Markdown viewer must support Mermaid diagrams. GitHub renders Mermaid code
-blocks automatically. In the rendered report, scroll to **Complete Dependency
-Graph** and select **Show all packages and edges** to expand the full graph.
-
-Remove the isolated database when finished:
-
-```bash
-docker exec job-queue-pg \
-  dropdb -U postgres jobqueue_mock_run
-```
-
----
-
-## Documentation
-
-For comprehensive technical deep dives, consult the specifications in `docs/`:
-- [Architecture Overview](docs/architecture.md)
-- [Worker Pool Specification](docs/worker-pool.md)
-- [Job Queue Details](docs/job-queue.md)
-- [Retry Engine & Backoff](docs/retry-engine.md)
-- [Dead-Letter Queue](docs/dead-letter-queue.md)
-- [Graceful Shutdown Protocol](docs/graceful-shutdown.md)
-- [Data Models](docs/data-models.md)
-- [Dependency Auditor Reference Workload](docs/dependency-auditor.md)
-- [Dependency Graph Markdown Report](docs/implementation/features/dependency-graph-report.md)
-- [Resolved Dependency Graph Mapping](docs/implementation/features/mapping.md)
+See [architecture](docs/architecture.md), [reliability guarantees](docs/reliability.md),
+[test strategy](docs/testing.md), and the [demo runbook](docs/demo.md).

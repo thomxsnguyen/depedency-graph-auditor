@@ -12,10 +12,14 @@ import (
 type Status string
 
 const (
-	StatusPending      Status = "pending"
-	StatusRunning      Status = "running"
-	StatusCompleted    Status = "completed"
-	StatusDeadLettered Status = "dead_lettered"
+	StatusPending        Status = "pending"
+	StatusRunning        Status = "running"
+	StatusWaiting        Status = "waiting"
+	StatusRetryScheduled Status = "retry_scheduled"
+	StatusCompleted      Status = "completed"
+	StatusFailed         Status = "failed"
+	StatusDeadLettered   Status = "dead_lettered"
+	StatusCancelled      Status = "cancelled"
 )
 
 // DefaultMaxAttempts is the number of times a job will be tried before it is
@@ -25,13 +29,30 @@ const DefaultMaxAttempts = 5
 // Job is the generic unit of work submitted to the queue.
 // It carries a type identifier, an arbitrary payload, and its current status.
 type Job struct {
-	ID          string
-	Type        string
-	Payload     json.RawMessage
-	Status      Status
-	Attempts    int       // how many times this job has been tried (0 = never run)
-	MaxAttempts int       // maximum tries before the job is abandoned
-	ScheduledAt time.Time // zero = run immediately; set by retry path for durable backoff
+	ID                string          `json:"id"`
+	Type              string          `json:"type"`
+	Payload           json.RawMessage `json:"payload,omitempty"`
+	Status            Status          `json:"status"`
+	Attempts          int             `json:"attempts"`
+	MaxAttempts       int             `json:"maxAttempts"`
+	ScheduledAt       time.Time       `json:"scheduledAt"`
+	RootJobID         string          `json:"rootJobId,omitempty"`
+	ParentJobID       string          `json:"parentJobId,omitempty"`
+	Internal          bool            `json:"internal,omitempty"`
+	IdempotencyKey    string          `json:"-"`
+	RequestHash       string          `json:"-"`
+	LockedBy          string          `json:"lockedBy,omitempty"`
+	LeaseToken        string          `json:"-"`
+	LockedUntil       *time.Time      `json:"lockedUntil,omitempty"`
+	HeartbeatAt       *time.Time      `json:"heartbeatAt,omitempty"`
+	CancelRequestedAt *time.Time      `json:"cancelRequestedAt,omitempty"`
+	LastErrorKind     ErrorKind       `json:"lastErrorKind,omitempty"`
+	LastError         string          `json:"lastError,omitempty"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	StartedAt         *time.Time      `json:"startedAt,omitempty"`
+	CompletedAt       *time.Time      `json:"completedAt,omitempty"`
+	RetriedFromJobID  string          `json:"retriedFromJobId,omitempty"`
+	ReplayedFromJobID string          `json:"replayedFromJobId,omitempty"`
 }
 
 // NewJob constructs a Job with a fresh ID, pending status, and the default
